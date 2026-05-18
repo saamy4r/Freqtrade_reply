@@ -6,6 +6,7 @@ Patch surface beyond ReplayExchange:
   Worker._sleep                   → advance virtual clock instead of wall-clock sleep
 """
 
+import json
 import logging
 import subprocess
 from copy import deepcopy
@@ -72,6 +73,49 @@ def _download_data(
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         logger.warning("download-data exited with code %d — proceeding anyway", result.returncode)
+
+
+def _write_view_config(
+    db_url: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    tf_secs: int,
+) -> str:
+    """
+    Write replay_view.json next to the DB so the user can immediately
+    start `freqtrade trade` pointing at the replay results in FreqUI.
+
+    startup_candle_count is calculated to cover the full replay window
+    plus a 60-day buffer (in case the user views results weeks later).
+    """
+    # Candles needed: replay span + 60 days buffer, so charts load from start_dt
+    replay_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
+    buffer_candles = int(timedelta(days=60).total_seconds() / tf_secs)
+    startup_candle_count = replay_candles + buffer_candles
+
+    db_path = Path(db_url.replace("sqlite:///", ""))
+    view_path = db_path.parent / "replay_view.json"
+
+    cfg = {
+        "db_url": db_url,
+        "startup_candle_count": startup_candle_count,
+        "api_server": {
+            "enabled": True,
+            "listen_ip_address": "0.0.0.0",
+            "listen_port": 8080,
+            "verbosity": "error",
+            "enable_openapi": False,
+            "jwt_secret_key": "replay-jwt-secret",
+            "CORS_origins": [],
+            "username": "freqtrade",
+            "password": "replay",
+        },
+    }
+
+    with open(view_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+    return str(view_path)
 
 
 def run_replay(
@@ -198,9 +242,15 @@ def run_replay(
             current += timedelta(seconds=tf_secs)
 
         # ---------------------------------------------------------------- #
-        # 9. Summary                                                         #
+        # 9. Summary + view config                                           #
         # ---------------------------------------------------------------- #
         _print_summary(db_url, report_path=report_path)
+        view_path = _write_view_config(db_url, start_dt, end_dt, tf_secs)
+        print(f"  FreqUI view  : docker compose run --rm -p 127.0.0.1:8081:8080 freqtrade trade \\")
+        print(f"                   --config <your-config.json> \\")
+        print(f"                   --config {view_path} \\")
+        print(f"                   --strategy <StrategyName>")
+        print()
 
     finally:
         ExchangeResolver.load_exchange = original_load_exchange
