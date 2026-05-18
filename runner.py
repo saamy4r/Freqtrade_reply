@@ -85,13 +85,14 @@ def _write_view_config(
     Write replay_view.json next to the DB so the user can immediately
     start `freqtrade trade` pointing at the replay results in FreqUI.
 
-    startup_candle_count is calculated to cover the full replay window
-    plus a 60-day buffer (in case the user views results weeks later).
+    startup_candle_count covers the replay span + 30-day view buffer,
+    capped at 4900 to stay under Binance's 5× candle-limit validation
+    (Binance allows 1000 candles/request → 5×1000=5000 hard limit).
+    At 15m this covers ~51 days; at 1h it covers ~204 days.
     """
-    # Candles needed: replay span + 60 days buffer, so charts load from start_dt
     replay_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
-    buffer_candles = int(timedelta(days=60).total_seconds() / tf_secs)
-    startup_candle_count = replay_candles + buffer_candles
+    buffer_candles = int(timedelta(days=30).total_seconds() / tf_secs)
+    startup_candle_count = min(replay_candles + buffer_candles, 4900)
 
     db_path = Path(db_url.replace("sqlite:///", ""))
     view_path = db_path.parent / "replay_view.json"
