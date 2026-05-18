@@ -78,7 +78,7 @@ class ReplayDataStore:
         # Binary search — O(log n) instead of O(n) boolean mask
         idx = int(df["date"].searchsorted(up_to_ts, side="left"))
         start = max(0, idx - self.MAX_CANDLES)
-        return df.iloc[start:idx].copy()
+        return df.iloc[start:idx].reset_index(drop=True)
 
     def get_last_price(self, pair: str, up_to: datetime) -> float:
         """Last known close price strictly before up_to, finest resolution first."""
