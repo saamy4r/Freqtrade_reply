@@ -213,6 +213,9 @@ class ReplayExchange(Exchange):
     ) -> float:
         return 0.0
 
+    def get_max_leverage(self, pair: str, stake_amount: float | None) -> float:
+        return 125.0  # Binance futures max; lets strategy.leverage() value pass through unchanged
+
     def set_leverage(
         self, leverage: float, pair: str | None = None, accept_fail: bool = False
     ) -> None:
