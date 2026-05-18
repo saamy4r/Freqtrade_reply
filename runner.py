@@ -81,7 +81,7 @@ def run_replay(
     end_dt: datetime,
     strategy: str = "GKD_FisherTransformV4",
     slippage_pct: float = 0.0005,
-    db_url: str = "sqlite:////freqtrade/user_data/replay.db",
+    db_url: str = "sqlite:////freqtrade/user_data/tradesv3.sqlite",
     datadir: str = "/freqtrade/user_data/data/binance/futures",
     fresh: bool = True,
     report_path: str | None = None,
