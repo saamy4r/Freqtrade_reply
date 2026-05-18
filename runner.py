@@ -100,6 +100,7 @@ def _write_view_config(
     cfg = {
         "db_url": db_url,
         "startup_candle_count": startup_candle_count,
+        "initial_state": "running",
         "api_server": {
             "enabled": True,
             "listen_ip_address": "0.0.0.0",
