@@ -40,21 +40,32 @@ class ReplayDataStore:
 
     def _load_all(self) -> None:
         for pair in self._pairs:
-            self._candles[pair] = {}
-            for tf in _TIMEFRAMES:
-                path = self._filename(pair, tf)
-                if not path.exists():
-                    continue
-                df = pd.read_feather(path)
-                df = df.sort_values("date").reset_index(drop=True)
-                if df["date"].dt.tz is None:
-                    df["date"] = df["date"].dt.tz_localize("UTC")
-                self._candles[pair][tf] = df
-                logger.info(
-                    "Loaded %s %s: %d candles  %s → %s",
-                    pair, tf, len(df),
-                    df.iloc[0]["date"].isoformat(), df.iloc[-1]["date"].isoformat(),
-                )
+            self._load_pair(pair)
+
+    def _load_pair(self, pair: str) -> None:
+        self._candles.setdefault(pair, {})
+        for tf in _TIMEFRAMES:
+            path = self._filename(pair, tf)
+            if not path.exists():
+                continue
+            df = pd.read_feather(path)
+            df = df.sort_values("date").reset_index(drop=True)
+            if df["date"].dt.tz is None:
+                df["date"] = df["date"].dt.tz_localize("UTC")
+            self._candles[pair][tf] = df
+            logger.info(
+                "Loaded %s %s: %d candles  %s → %s",
+                pair, tf, len(df),
+                df.iloc[0]["date"].isoformat(), df.iloc[-1]["date"].isoformat(),
+            )
+
+    def load_extra_pair(self, pair: str) -> bool:
+        """Load data for an informative pair not in the original pairs list.
+        Returns True if at least one timeframe was found on disk."""
+        if self._candles.get(pair):
+            return True
+        self._load_pair(pair)
+        return bool(self._candles.get(pair))
 
     # ------------------------------------------------------------------
     # Public API

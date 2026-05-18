@@ -120,6 +120,53 @@ def _write_view_config(
     return str(view_path)
 
 
+def _load_informative_pairs(
+    bot,
+    store: "ReplayDataStore",
+    exchange: "ReplayExchange",
+    config_path: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    datadir: str,
+    trading_mode: str,
+) -> None:
+    """Detect and load informative pairs declared by the strategy."""
+    try:
+        inf_pairs = bot.strategy.informative_pairs()
+    except Exception as exc:
+        logger.warning("Could not read informative_pairs() from strategy: %s", exc)
+        return
+
+    extra: set[str] = set()
+    for item in inf_pairs:
+        inf_pair = item[0]  # (pair, tf) or (pair, tf, candle_type)
+        if inf_pair not in store._candles:
+            extra.add(inf_pair)
+
+    if not extra:
+        return
+
+    logger.info("Detected informative pairs not in whitelist: %s", sorted(extra))
+
+    missing: list[str] = []
+    for pair in sorted(extra):
+        found = store.load_extra_pair(pair)
+        if not found:
+            missing.append(pair)
+
+    if missing:
+        logger.info("Downloading missing informative pair data: %s", missing)
+        _download_data(config_path, missing, start_dt, end_dt, datadir, trading_mode)
+        for pair in missing:
+            store.load_extra_pair(pair)
+
+    # Register informative pairs in the exchange market map so Freqtrade
+    # doesn't reject them as unknown symbols.
+    for pair in extra:
+        if pair not in exchange._markets:
+            exchange._markets[pair] = exchange._make_market(pair)
+
+
 def run_replay(
     config_path: str,
     pairs: list[str],
@@ -212,6 +259,10 @@ def run_replay(
         # ---------------------------------------------------------------- #
         bot = FreqtradeBot(config)
         bot.state = State.RUNNING  # Worker normally does this; we bypass Worker
+
+        # Load informative pairs declared by the strategy (e.g. BTC as a filter).
+        # These are not in the user's --pairs list so the store doesn't have them yet.
+        _load_informative_pairs(bot, store, exchange, config_path, start_dt, end_dt, datadir, trading_mode)
 
         total_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
         logger.info(
