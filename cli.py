@@ -4,18 +4,20 @@ Freqtrade Replay Harness — CLI entry point.
 
 Example (inside container):
     python /freqtrade/user_data/freqtrade_replay/cli.py \
+        --timerange 20241101-20241115
+
+    # override config, pairs, strategy as needed:
+    python /freqtrade/user_data/freqtrade_replay/cli.py \
         --config /freqtrade/user_data/config.json \
         --pairs "BTC/USDT:USDT" "ETH/USDT:USDT" \
         --timerange 20241101-20241115
 
 Docker run (from project root):
-    docker compose --profile replay run --rm replay \
-        --config /freqtrade/user_data/config.json \
-        --pairs "BTC/USDT:USDT" "ETH/USDT:USDT" \
-        --timerange 20241101-20241115
+    docker compose --profile replay run --rm replay --timerange 20241101-20241115
 """
 
 import argparse
+import json
 import logging
 import sys
 from datetime import datetime, timezone
@@ -43,19 +45,34 @@ for noisy in (
 ):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 
+DEFAULT_CONFIG = "/freqtrade/user_data/config.json"
+
 
 def _parse_dt(s: str) -> datetime:
     return datetime.strptime(s, "%Y%m%d").replace(tzinfo=timezone.utc)
+
+
+def _pairs_from_config(config_path: str) -> list[str]:
+    with open(config_path) as f:
+        cfg = json.load(f)
+    pairs = cfg.get("exchange", {}).get("pair_whitelist", [])
+    if not pairs:
+        raise SystemExit(f"No pairs specified and pair_whitelist in {config_path} is empty.")
+    return pairs
 
 
 def main() -> None:
     p = argparse.ArgumentParser(
         description="Run Freqtrade dry-run loop against historical data at max speed."
     )
-    p.add_argument("--config", required=True, help="Path to freqtrade config.json")
     p.add_argument(
-        "--pairs", required=True, nargs="+",
-        help='Trading pairs, e.g. "BTC/USDT:USDT" "ETH/USDT:USDT"',
+        "--config", default=DEFAULT_CONFIG,
+        help=f"Path to freqtrade config.json (default: {DEFAULT_CONFIG})",
+    )
+    p.add_argument(
+        "--pairs", nargs="+", default=None,
+        help='Trading pairs, e.g. "BTC/USDT:USDT" "ETH/USDT:USDT". '
+             "Defaults to pair_whitelist in config.",
     )
     p.add_argument(
         "--timerange", required=True,
@@ -102,9 +119,11 @@ def main() -> None:
     if start_dt >= end_dt:
         p.error("Start date must be before end date")
 
+    pairs = args.pairs or _pairs_from_config(args.config)
+
     run_replay(
         config_path=args.config,
-        pairs=args.pairs,
+        pairs=pairs,
         start_dt=start_dt,
         end_dt=end_dt,
         strategy=args.strategy,
