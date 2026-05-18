@@ -142,6 +142,7 @@ class ReplayExchange(Exchange):
         cache: bool = True,
         drop_incomplete: bool | None = None,
     ) -> dict:
+        from freqtrade.enums import CandleType
         now = self._replay_clock.now()
         results: dict = {}
         for item in pair_list:
@@ -149,6 +150,12 @@ class ReplayExchange(Exchange):
             df = self._replay_store.get_candles(pair, tf, up_to=now)
             if cache and not df.empty:
                 self._klines[(pair, tf, c_type)] = df
+                # Strategies calling get_pair_dataframe() without candle_type resolve
+                # to CandleType.SPOT (empty string). Mirror data there so informative
+                # pairs (e.g. BTC/USDT:USDT 15m) are found regardless of how the
+                # strategy requests them.
+                if c_type != CandleType.SPOT:
+                    self._klines[(pair, tf, CandleType.SPOT)] = df
             results[(pair, tf, c_type)] = df
         return results
 
