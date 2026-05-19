@@ -104,15 +104,6 @@ class ReplayDataStore:
                 return float(df.iloc[idx]["close"])
         raise ValueError(f"No price data for {pair} before {up_to}")
 
-    def get_full_candles(self, pair: str, tf: str, from_dt: datetime, to_dt: datetime) -> pd.DataFrame:
-        """All candles in [from_dt, to_dt) with no row cap — used for pre-computation."""
-        df = self._candles.get(pair, {}).get(tf)
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
-        from_ts, to_ts = pd.Timestamp(from_dt), pd.Timestamp(to_dt)
-        mask = (df["date"] >= from_ts) & (df["date"] < to_ts)
-        return df[mask].reset_index(drop=True)
-
     def get_candle_ohlc(self, pair: str, tf: str, up_to: datetime) -> dict | None:
         """OHLC dict for the last completed candle of timeframe `tf` before `up_to`.
         Used by the exchange for intra-candle stop/limit fill detection."""
