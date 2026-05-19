@@ -201,6 +201,80 @@ class ReplayExchange(Exchange):
         }
 
     # ------------------------------------------------------------------
+    # Intra-candle order fill (stop-loss / take-profit accuracy)
+    # ------------------------------------------------------------------
+
+    def check_dry_limit_order_filled(
+        self,
+        order: dict,
+        immediate: bool = False,
+        orderbook: dict | None = None,
+    ) -> dict:
+        """
+        For deferred checks (existing open orders), replace the close±spread
+        synthetic order book with the last completed candle's high/low so that
+        stop-losses and limit exits trigger whenever the candle's range touched
+        the order price — matching backtesting behaviour.
+
+        For immediate checks (new orders just placed), delegate to the parent
+        so that market orders fill at the current close price as expected.
+        """
+        if immediate or order.get("status") == "closed":
+            return super().check_dry_limit_order_filled(
+                order, immediate=immediate, orderbook=orderbook
+            )
+
+        pair = order["symbol"]
+        tf = self._config.get("timeframe", "1h")
+        candle = self._replay_store.get_candle_ohlc(pair, tf, self._replay_clock.now())
+        if candle is None:
+            return super().check_dry_limit_order_filled(
+                order, immediate=False, orderbook=orderbook
+            )
+
+        low, high = candle["low"], candle["high"]
+        half_spread = low * self._slippage_pct / 2
+
+        # Intra-candle book:
+        #   ask = candle low  — market fell this low  → fills buy limits & sell stops
+        #   bid = candle high — market rose this high → fills sell limits & buy stops
+        candle_book: dict = {
+            "asks": [[low + half_spread, 999_999.0]],
+            "bids": [[high - half_spread, 999_999.0]],
+            "timestamp": int(self._replay_clock.now().timestamp() * 1000),
+            "datetime": self._replay_clock.now().isoformat(),
+            "nonce": 0,
+        }
+
+        # Stoploss orders need special fill-price handling: the parent would use
+        # get_dry_market_fill_price(bids=[high]) which fills at candle-high — wrong.
+        # Fill at order["price"] instead (the stop price with slippage already applied).
+        if order.get("ft_order_type") == "stoploss" and order.get("status") != "closed":
+            from freqtrade.misc import safe_value_fallback
+            stop_trigger = safe_value_fallback(
+                order, self._ft_has["stop_price_prop"], "price"
+            )
+            crossed = self._dry_is_price_crossed(
+                pair, order["side"], stop_trigger, candle_book, is_stop=True
+            )
+            if crossed:
+                fill_price = order["price"]
+                order.update({
+                    "status": "closed",
+                    "filled": order["amount"],
+                    "remaining": 0,
+                    "average": fill_price,
+                    "cost": order["amount"] * fill_price,
+                })
+                self.add_dry_order_fee(pair, order, "maker")
+            return order
+
+        # Regular limit orders: use candle book for crossing; fill price stays at order["price"]
+        return super().check_dry_limit_order_filled(
+            order, immediate=False, orderbook=candle_book
+        )
+
+    # ------------------------------------------------------------------
     # Futures no-ops
     # ------------------------------------------------------------------
 
