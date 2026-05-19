@@ -57,12 +57,12 @@ git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
 
 ## Download Historical Data
 
-Before running a replay you need candle data downloaded locally. Run this once (or whenever you want fresher data):
+Before running a replay you need candle data downloaded locally. **Always include `1m`** — the replay uses it for intra-candle stop-loss and take-profit accuracy (see [How It Works](#how-it-works)):
 
 ```bash
 docker compose run --rm freqtrade download-data \
   --config user_data/config.json \
-  --timeframes 5m 15m 1h 4h \
+  --timeframes 1m 5m 15m 1h 4h \
   --timerange 20250101-20250601 \
   --trading-mode futures
 ```
@@ -120,14 +120,31 @@ Then open **http://localhost:8080** in your browser. Log in with the username an
 Freqtrade's bot logic never talks to the exchange directly — it goes through a clean interface. Freqtrade Replay replaces that interface with:
 
 - **Fake exchange** — serves candle data from local files instead of Binance
-- **Virtual clock** — jumps forward one candle at a time instantly instead of waiting for real time
+- **Virtual clock** — jumps forward in time instantly instead of waiting for real time
 - **Real bot** — everything else (signals, DCA, stoploss, fees, order matching) runs exactly as in production
 
 The output is a real Freqtrade database, fully compatible with FreqUI and all Freqtrade analysis tools.
+
+### Why 1m data matters
+
+Most backtesting tools check stop-losses and take-profits only at the candle close. That misses a lot of what actually happens inside a candle.
+
+Consider a 1h candle: open=30, low=28, high=36, close=32. A live bot polling every few seconds would have seen the price drop to 28 and trigger a stop at 28.5 — or seen the price hit 35 and close a take-profit — long before the candle closed. A backtester that only looks at the close would miss both.
+
+Freqtrade Replay solves this by stepping through time at **1-minute resolution** using real 1m candle data. This means:
+
+- Stop-losses trigger when the 1m candle's low crosses the stop price — not just at the 1h close
+- Take-profits and limit exits fire when the 1m high reaches the target
+- The bot sees intra-candle price movements just like a live bot would
+
+Your strategy's indicator logic still runs on its configured timeframe (15m, 1h, 4h, etc.) — 1m data is only used for order fill checking. This keeps signals identical to live while making fills accurate.
+
+This is also why the results differ from freqtrade's built-in backtester: if your strategy uses a repainting indicator or has look-ahead bias, it will show up here just as it would in live trading — because the bot is running candle by candle, seeing only what was visible at each point in time.
 
 ---
 
 ## Tips
 
-- If a pair is missing data the tool will **auto-download** it before starting.
+- If a pair is missing data the tool will **auto-download** it before starting. The auto-download always includes 1m data.
 - If your strategy uses an **informative pair** (e.g. BTC as a filter) you do not need to add it to `--pairs` — it is detected and loaded automatically.
+- If you have old downloaded data without 1m files, re-run the download command with `--timeframes 1m 5m 15m 1h 4h` to add them. The replay will still work without 1m data but stop/TP fills will be less accurate.
