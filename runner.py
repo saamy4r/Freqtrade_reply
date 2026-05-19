@@ -305,14 +305,25 @@ def run_replay(
         # These are not in the user's --pairs list so the store doesn't have them yet.
         _load_informative_pairs(bot, store, exchange, config_path, start_dt, end_dt, datadir, trading_mode)
 
+        # ---------------------------------------------------------------- #
+        # 7b. Enable intra-candle simulation via 1-minute sub-steps          #
+        #     The loop advances at 1m resolution so stop-losses and limit    #
+        #     orders are checked against real 1m prices, not just the 1h     #
+        #     candle close.  process_only_new_candles prevents the strategy  #
+        #     from recomputing indicators on every 1m tick — it only runs    #
+        #     when a new strategy-timeframe candle has closed.               #
+        # ---------------------------------------------------------------- #
+        sub_step = 60  # 1-minute sub-candle resolution
+        bot.strategy.process_only_new_candles = True
+
         total_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
         logger.info(
-            "Replay ready: %s → %s  |  %d candles × %d pairs  |  tf=%s  |  slippage=%.4f%%",
+            "Replay ready: %s → %s  |  %d candles × %d pairs  |  tf=%s  |  slippage=%.4f%%  |  sub-step=1m",
             start_dt.date(), end_dt.date(), total_candles, len(pairs), tf, slippage_pct * 100,
         )
 
         # ---------------------------------------------------------------- #
-        # 8. Main loop — one process() call per candle                       #
+        # 8. Main loop — 1-minute steps, strategy analysis at tf boundary   #
         # ---------------------------------------------------------------- #
         current = start_dt
         processed = 0
@@ -324,16 +335,18 @@ def run_replay(
             except Exception as exc:
                 logger.warning("bot.process() raised at %s: %s", current, exc, exc_info=True)
 
-            processed += 1
-            if processed % 24 == 0:
-                n_open = len(Trade.get_open_trades())
-                n_closed = Trade.get_trades_proxy(is_open=False)
-                logger.info(
-                    "[%d/%d] %s  open=%d  closed=%d",
-                    processed, total_candles, current.strftime("%Y-%m-%d %H:%M"), n_open, len(n_closed),
-                )
+            # Progress log at each strategy-candle boundary
+            if current.timestamp() % tf_secs == 0:
+                processed += 1
+                if processed % 24 == 0:
+                    n_open = len(Trade.get_open_trades())
+                    n_closed = Trade.get_trades_proxy(is_open=False)
+                    logger.info(
+                        "[%d/%d] %s  open=%d  closed=%d",
+                        processed, total_candles, current.strftime("%Y-%m-%d %H:%M"), n_open, len(n_closed),
+                    )
 
-            current += timedelta(seconds=tf_secs)
+            current += timedelta(seconds=sub_step)
 
         # ---------------------------------------------------------------- #
         # 9. Summary + view config                                           #

@@ -225,8 +225,13 @@ class ReplayExchange(Exchange):
             )
 
         pair = order["symbol"]
-        tf = self._config.get("timeframe", "1h")
-        candle = self._replay_store.get_candle_ohlc(pair, tf, self._replay_clock.now())
+        # Try finest resolution first so stops fire at real 1m prices when
+        # the loop is running at 1-minute sub-steps.
+        candle = None
+        for _tf in ("1m", "5m", "15m", self._config.get("timeframe", "1h")):
+            candle = self._replay_store.get_candle_ohlc(pair, _tf, self._replay_clock.now())
+            if candle is not None:
+                break
         if candle is None:
             return super().check_dry_limit_order_filled(
                 order, immediate=False, orderbook=orderbook
