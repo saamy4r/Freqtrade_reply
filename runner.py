@@ -19,6 +19,7 @@ from freqtrade.enums import State
 from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Trade, init_db
 from freqtrade.resolvers import ExchangeResolver
+from freqtrade.wallets import Wallets
 from freqtrade.worker import Worker
 
 from .clock import VirtualClock
@@ -208,6 +209,91 @@ def run_replay(
         lambda duration: clock.advance_to(clock.now() + timedelta(seconds=max(duration, 0)))
     )
 
+    # ------------------------------------------------------------------ #
+    # 6b. Patch Wallets.record_wallet_state to use upsert semantics        #
+    #     The method floors its timestamp to the day, so multiple calls     #
+    #     within the same replay day all share the same (timestamp,         #
+    #     currency) key and hit the UNIQUE constraint.                      #
+    # ------------------------------------------------------------------ #
+    original_record_wallet_state = Wallets.record_wallet_state
+
+    def _upsert_record_wallet_state(self) -> None:
+        from freqtrade.persistence import WalletHistory
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        if self._is_backtest:
+            return
+        from freqtrade.util.datetime_helpers import dt_floor_day, dt_now
+        timestamp = dt_floor_day(dt_now())
+
+        position_collaterals = 0.0
+        open_assets: dict = {t.safe_base_currency: t for t in Trade.get_open_trades()}
+        wallet_records = []
+
+        for pos in self.get_all_positions().values():
+            base = self._exchange.get_pair_base_currency(pos.symbol)
+            rate = self._exchange.get_conversion_rate(base, self._stake_currency)
+            leverage = pos.leverage or 1.0
+            total_quote = None
+            if rate:
+                total_quote = (
+                    rate * pos.position - pos.collateral * (leverage - 1)
+                    if pos.side == "long"
+                    else pos.collateral * (1 + leverage) - rate * pos.position
+                )
+            position_collaterals += pos.collateral
+            wallet_records.append({
+                "timestamp": timestamp,
+                "currency": pos.symbol,
+                "quote_currency": self._stake_currency,
+                "rate": rate,
+                "balance": pos.position,
+                "total_quote": total_quote,
+                "total_position_value": rate * pos.position if rate else None,
+                "collateral": pos.collateral,
+                "leverage": leverage,
+                "bot_managed": base in open_assets,
+            })
+
+        for wallet in self.get_all_balances().values():
+            rate = self._exchange.get_conversion_rate(wallet.currency, self._stake_currency)
+            balance = wallet.total - (
+                position_collaterals if wallet.currency == self._stake_currency else 0
+            )
+            wallet_records.append({
+                "timestamp": timestamp,
+                "currency": wallet.currency,
+                "quote_currency": self._stake_currency,
+                "rate": rate,
+                "balance": balance,
+                "total_quote": rate * balance if rate else None,
+                "total_position_value": None,
+                "collateral": None,
+                "leverage": 1.0,
+                "bot_managed": self._stake_currency == wallet.currency or wallet.currency in open_assets,
+            })
+
+        if not wallet_records:
+            return
+        try:
+            stmt = sqlite_insert(WalletHistory.__table__).values(wallet_records)
+            update_cols = {
+                col.name: stmt.excluded[col.name]
+                for col in WalletHistory.__table__.columns
+                if col.name != "id"
+            }
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["timestamp", "currency"],
+                set_=update_cols,
+            )
+            WalletHistory.session.execute(stmt)
+            WalletHistory.session.commit()
+        except Exception as e:
+            WalletHistory.session.rollback()
+            logger.error("Error saving wallet balance records: %s", e)
+
+    Wallets.record_wallet_state = _upsert_record_wallet_state
+
     try:
         # ---------------------------------------------------------------- #
         # 7. Initialise FreqtradeBot                                         #
@@ -259,6 +345,7 @@ def run_replay(
     finally:
         ExchangeResolver.load_exchange = original_load_exchange
         Worker._sleep = original_sleep
+        Wallets.record_wallet_state = original_record_wallet_state
         clock.stop()
 
 
