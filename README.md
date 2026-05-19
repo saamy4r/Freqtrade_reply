@@ -127,19 +127,11 @@ The output is a real Freqtrade database, fully compatible with FreqUI and all Fr
 
 ### Why 1m data matters
 
-Most backtesting tools check stop-losses and take-profits only at the candle close. That misses a lot of what actually happens inside a candle.
+Backtesting only checks stops and exits at the candle close — so if price wicked down to your stop and recovered, it never triggers. A live bot would have caught that.
 
-Consider a 1h candle: open=30, low=28, high=36, close=32. A live bot polling every few seconds would have seen the price drop to 28 and trigger a stop at 28.5 — or seen the price hit 35 and close a take-profit — long before the candle closed. A backtester that only looks at the close would miss both.
+The replay steps through time at 1-minute resolution using real 1m data, so stops and take-profits fire the same way they would live. Your strategy still runs on its own timeframe (15m, 1h, etc.) — 1m is only used for order fills.
 
-Freqtrade Replay solves this by stepping through time at **1-minute resolution** using real 1m candle data. This means:
-
-- Stop-losses trigger when the 1m candle's low crosses the stop price — not just at the 1h close
-- Take-profits and limit exits fire when the 1m high reaches the target
-- The bot sees intra-candle price movements just like a live bot would
-
-Your strategy's indicator logic still runs on its configured timeframe (15m, 1h, 4h, etc.) — 1m data is only used for order fill checking. This keeps signals identical to live while making fills accurate.
-
-This is also why the results differ from freqtrade's built-in backtester: if your strategy uses a repainting indicator or has look-ahead bias, it will show up here just as it would in live trading — because the bot is running candle by candle, seeing only what was visible at each point in time.
+This is also why repainting indicators and look-ahead bias show up here but not in backtesting.
 
 ---
 
