@@ -26,7 +26,7 @@ git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
 
 ```yaml
   replay:
-    image: saamy4r/freqtrade-replay:latest
+    image: ghcr.io/saamy4r/freqtrade-replay:latest
     volumes:
       - "./user_data:/freqtrade/user_data"
     entrypoint:
@@ -76,7 +76,7 @@ docker compose run --rm freqtrade download-data \
 ```bash
 docker compose --profile replay run --rm replay \
   --strategy MyStrategy \
-  --timerange 20250301-20250501
+  --timerange 20250301-20260501
 ```
 
 That's it. When it finishes you will see a summary in the terminal:
@@ -91,7 +91,7 @@ That's it. When it finishes you will see a summary in the terminal:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--strategy` | `GKD_FisherTransformV4` | Strategy class name |
+| `--strategy` | `` | Strategy class name |
 | `--timerange` | required | Date range `YYYYMMDD-YYYYMMDD` |
 | `--pairs` | from config whitelist | Override which pairs to trade |
 | `--config` | `user_data/config.json` | Path to your config file |
@@ -107,10 +107,11 @@ That's it. When it finishes you will see a summary in the terminal:
 After the replay finishes, start the Freqtrade viewer:
 
 ```bash
-docker compose up freqtrade
+docker compose up -d 
+simply start a dry test of your strategy, then in the dashboard you will see the results.
 ```
 
-Then open **http://localhost:8081** in your browser. Log in with the username and password from your `config.json`. You will see all trades on the chart exactly like a real dry-run.
+Then open **http://localhost:8080** in your browser. Log in with the username and password from your `config.json`. You will see all trades on the chart exactly like a real dry-run.
 
 ---
 
@@ -130,4 +131,3 @@ The output is a real Freqtrade database, fully compatible with FreqUI and all Fr
 
 - If a pair is missing data the tool will **auto-download** it before starting.
 - If your strategy uses an **informative pair** (e.g. BTC as a filter) you do not need to add it to `--pairs` — it is detected and loaded automatically.
-- BILL and BZ are new listings with very short history — consider removing them from the whitelist if your strategy needs a long warmup period.
