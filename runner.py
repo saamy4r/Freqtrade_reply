@@ -12,10 +12,11 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
+
 from freqtrade.configuration import Configuration  # returns dict directly in 2026.x
-from freqtrade.enums import RunMode
+from freqtrade.enums import CandleType, RunMode, State
 from freqtrade.exchange import timeframe_to_seconds
-from freqtrade.enums import State
 from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Trade, init_db
 from freqtrade.resolvers import ExchangeResolver
@@ -121,6 +122,63 @@ def _load_informative_pairs(
     for pair in extra:
         if pair not in exchange._markets:
             exchange._markets[pair] = exchange._make_market(pair)
+
+
+def _precompute_indicators(
+    bot,
+    store: "ReplayDataStore",
+    pairs: list[str],
+    tf: str,
+    data_start: datetime,
+    end_dt: datetime,
+    clock: "VirtualClock",
+) -> dict:
+    """Run populate_indicators once on the full dataset for each pair.
+
+    Standard indicators (EMA, RSI, Bollinger Bands, etc.) are causal: the
+    value at row T depends only on rows ≤ T.  Pre-computing on the full
+    range and then slicing to date < T gives an identical result to running
+    indicators fresh on each candle, but costs O(pairs) instead of
+    O(pairs × candles).
+
+    Returns a dict  pair → fully-analyzed DataFrame  (all rows, unsorted).
+    Falls back gracefully: if pre-computation for a pair fails the main loop
+    falls back to per-candle analysis for that pair.
+    """
+    candle_type = CandleType(bot.config.get("candle_type_def", "spot"))
+    precomputed: dict[str, pd.DataFrame] = {}
+
+    # Advance clock to end_dt so refresh() populates klines with the most
+    # recent slice — informative pairs (e.g. BTC 4h) need to be in klines
+    # before populate_indicators() is called.
+    clock.advance_to(end_dt)
+    bot.dataprovider.refresh(
+        bot.pairlists.create_pair_list(pairs),
+        bot.strategy.gather_informative_pairs(),
+    )
+
+    for pair in pairs:
+        # Overwrite klines with the full uncapped history so indicators that
+        # look further back than MAX_CANDLES are computed correctly.
+        full_df = store.get_full_candles(pair, tf, data_start, end_dt)
+        if full_df.empty:
+            logger.warning("No full candle data for %s — will compute per-candle", pair)
+            continue
+
+        bot.exchange._klines[(pair, tf, candle_type)] = full_df
+        if candle_type != CandleType.SPOT:
+            bot.exchange._klines[(pair, tf, CandleType.SPOT)] = full_df
+
+        try:
+            analyzed = bot.strategy.analyze_ticker(full_df.copy(), {"pair": pair})
+        except Exception as exc:
+            logger.warning("Pre-computation failed for %s: %s — falling back to per-candle", pair, exc)
+            continue
+
+        precomputed[pair] = analyzed
+        logger.info("Pre-computed %s: %d candles with indicators", pair, len(analyzed))
+
+    return precomputed
 
 
 def run_replay(
@@ -304,6 +362,35 @@ def run_replay(
         # Load informative pairs declared by the strategy (e.g. BTC as a filter).
         # These are not in the user's --pairs list so the store doesn't have them yet.
         _load_informative_pairs(bot, store, exchange, config_path, start_dt, end_dt, datadir, trading_mode)
+
+        # ---------------------------------------------------------------- #
+        # 7b. Pre-compute indicators once for all pairs                      #
+        #     Replaces O(candles × pairs) indicator passes with O(pairs).    #
+        # ---------------------------------------------------------------- #
+        _precomputed = _precompute_indicators(
+            bot, store, pairs, tf, data_start, end_dt, clock
+        )
+        if _precomputed:
+            _candle_type = CandleType(config.get("candle_type_def", "spot"))
+
+            def _fast_analyze(pairs_list: list) -> None:
+                _now = pd.Timestamp(clock.now())
+                for _pair in pairs_list:
+                    if _pair not in _precomputed:
+                        bot.strategy.analyze_pair(_pair)
+                        continue
+                    _sliced = _precomputed[_pair][_precomputed[_pair]["date"] < _now]
+                    if _sliced.empty:
+                        bot.strategy.analyze_pair(_pair)
+                        continue
+                    bot.dataprovider._set_cached_df(
+                        _pair, tf, _sliced.reset_index(drop=True), _candle_type
+                    )
+
+            bot.strategy.analyze = _fast_analyze
+            # Reset clock to warmup start after pre-computation advanced it to end_dt
+            clock.advance_to(data_start)
+            logger.info("Indicator pre-computation complete — main loop uses cached slices")
 
         total_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
         logger.info(
