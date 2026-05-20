@@ -125,90 +125,66 @@ def _load_informative_pairs(
             exchange._markets[pair] = exchange._make_market(pair)
 
 
-class _BarAwareHandler(logging.StreamHandler):
-    """StreamHandler that erases the sticky bar before each log line and redraws it after."""
-
-    def __init__(self, stream, formatter, level, bar: "_StickyProgress") -> None:
-        super().__init__(stream)
-        self.setFormatter(formatter)
-        self.setLevel(level)
-        self._bar = bar
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.acquire()
-        try:
-            try:
-                msg = self.format(record)
-                # Erase bar, write log line, redraw bar — all in one write to avoid flicker
-                out = "\r\033[2K" + msg + self.terminator
-                if self._bar._text:
-                    cols = shutil.get_terminal_size((80, 24)).columns
-                    out += self._bar._text[:cols] + "\r"
-                self.stream.write(out)
-                self.stream.flush()
-            except RecursionError:
-                raise
-            except Exception:
-                self.handleError(record)
-        finally:
-            self.release()
-
-
 class _StickyProgress:
     """
-    Pins a single-line progress bar to the bottom of the terminal.
+    Pins a progress bar to the last line of the terminal.
 
-    Uses a cursor-at-start-of-bar-line convention:
-      - cursor always rests at the start of the bar line
-      - each log emit: erase bar line → write log → write bar → cursor back to start
-    Falls back silently to no-op when stderr is not a tty.
+    A background thread redraws the bar every 200 ms using ANSI escape codes:
+      save cursor → jump to last row → erase line → write bar → restore cursor
+    This works regardless of which logging handler freqtrade uses internally.
+    Falls back to plain logger.info() lines when stderr is not a tty.
     """
+
+    _REFRESH = 0.2
 
     def __init__(self) -> None:
         self._tty = sys.stderr.isatty()
         self._text = ""
-        self._orig_handler: logging.Handler | None = None
+        self._lock = __import__("threading").Lock()
+        self._stop = __import__("threading").Event()
+        self._thread = None
 
     def __enter__(self) -> "_StickyProgress":
         if self._tty:
-            self._patch_root_logger()
+            import threading
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
         return self
 
     def __exit__(self, *_) -> None:
-        if self._tty and self._text:
-            sys.stderr.write("\r\033[2K\n")
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        if self._tty:
+            # Erase bar line on exit so the prompt lands cleanly below the logs
+            sys.stderr.write("\033[s\033[9999B\r\033[2K\033[u")
             sys.stderr.flush()
-        self._restore_root_logger()
 
     @property
     def is_tty(self) -> bool:
         return self._tty
 
     def update(self, text: str) -> None:
-        self._text = text
-        if self._tty:
-            cols = shutil.get_terminal_size((80, 24)).columns
-            sys.stderr.write(text[:cols] + "\r")
-            sys.stderr.flush()
+        with self._lock:
+            self._text = text
 
-    def _patch_root_logger(self) -> None:
-        root = logging.getLogger()
-        for i, h in enumerate(root.handlers):
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
-                wrapper = _BarAwareHandler(h.stream, h.formatter, h.level, self)
-                root.handlers[i] = wrapper
-                self._orig_handler = h
-                return
-
-    def _restore_root_logger(self) -> None:
-        if self._orig_handler is None:
+    def _draw(self) -> None:
+        with self._lock:
+            text = self._text
+        if not text:
             return
-        root = logging.getLogger()
-        for i, h in enumerate(root.handlers):
-            if isinstance(h, _BarAwareHandler):
-                root.handlers[i] = self._orig_handler
-                break
-        self._orig_handler = None
+        cols = shutil.get_terminal_size((80, 24)).columns
+        bar = text[:cols].ljust(cols)
+        # \033[s  = save cursor
+        # \033[9999B = move down as far as possible (last visible row)
+        # \r\033[2K = go to start of line, erase it
+        # \033[u  = restore cursor
+        sys.stderr.write(f"\033[s\033[9999B\r\033[2K{bar}\033[u")
+        sys.stderr.flush()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._REFRESH):
+            self._draw()
 
 
 def run_replay(
