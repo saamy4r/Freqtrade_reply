@@ -8,6 +8,7 @@ Patch surface beyond ReplayExchange:
 
 import logging
 import subprocess
+import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -327,6 +328,15 @@ def run_replay(
         # ---------------------------------------------------------------- #
         current = start_dt
         processed = 0
+        wall_start = time.time()
+        total_sim_secs = (end_dt - start_dt).total_seconds()
+
+        def _fmt_dur(secs: float) -> str:
+            secs = max(0.0, secs)
+            h = int(secs // 3600)
+            m = int((secs % 3600) // 60)
+            s = int(secs % 60)
+            return f"{h}:{m:02d}:{s:02d}"
 
         while current < end_dt:
             clock.advance_to(current)
@@ -341,9 +351,23 @@ def run_replay(
                 if processed % 24 == 0:
                     n_open = len(Trade.get_open_trades())
                     n_closed = Trade.get_trades_proxy(is_open=False)
+
+                    elapsed_sim = (current - start_dt).total_seconds()
+                    pct = elapsed_sim / total_sim_secs if total_sim_secs > 0 else 0.0
+                    elapsed_wall = time.time() - wall_start
+                    rate = elapsed_sim / elapsed_wall if elapsed_wall > 0 else 0.0
+                    remaining_sim = (end_dt - current).total_seconds()
+                    eta_wall = remaining_sim / rate if rate > 0 else 0.0
+
+                    bar_width = 20
+                    filled = int(bar_width * pct)
+                    bar = "█" * filled + "░" * (bar_width - filled)
+
                     logger.info(
-                        "[%d/%d] %s  open=%d  closed=%d",
-                        processed, total_candles, current.strftime("%Y-%m-%d %H:%M"), n_open, len(n_closed),
+                        "[%s] %4.1f%%  %s  open=%d  closed=%d  elapsed=%s  ETA=%s",
+                        bar, pct * 100, current.strftime("%Y-%m-%d %H:%M"),
+                        n_open, len(n_closed),
+                        _fmt_dur(elapsed_wall), _fmt_dur(eta_wall),
                     )
 
             current += timedelta(seconds=sub_step)
