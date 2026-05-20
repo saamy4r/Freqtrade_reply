@@ -251,6 +251,10 @@ def run_replay(
     # ------------------------------------------------------------------ #
     # 3. Virtual clock                                                      #
     # ------------------------------------------------------------------ #
+    # Save the real monotonic function before freezegun patches it.
+    # After clock.start() every time.* call returns frozen virtual time.
+    _wall_clock = time.monotonic
+
     clock = VirtualClock()
     clock.start(data_start)
 
@@ -391,7 +395,7 @@ def run_replay(
         # ---------------------------------------------------------------- #
         current = start_dt
         processed = 0
-        wall_start = time.monotonic()
+        wall_start = _wall_clock()
         total_sim_secs = (end_dt - start_dt).total_seconds()
 
         def _fmt_dur(secs: float) -> str:
@@ -425,7 +429,7 @@ def run_replay(
 
                         elapsed_sim = (current - start_dt).total_seconds()
                         pct = elapsed_sim / total_sim_secs if total_sim_secs > 0 else 0.0
-                        elapsed_wall = time.monotonic() - wall_start
+                        elapsed_wall = _wall_clock() - wall_start
                         rate = elapsed_sim / elapsed_wall if elapsed_wall > 0 else 0.0
                         remaining_sim = (end_dt - current).total_seconds()
                         eta_wall = remaining_sim / rate if rate > 0 else 0.0
