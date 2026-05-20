@@ -7,7 +7,9 @@ Patch surface beyond ReplayExchange:
 """
 
 import logging
+import shutil
 import subprocess
+import sys
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -122,6 +124,91 @@ def _load_informative_pairs(
         if pair not in exchange._markets:
             exchange._markets[pair] = exchange._make_market(pair)
 
+
+class _BarAwareHandler(logging.StreamHandler):
+    """StreamHandler that erases the sticky bar before each log line and redraws it after."""
+
+    def __init__(self, stream, formatter, level, bar: "_StickyProgress") -> None:
+        super().__init__(stream)
+        self.setFormatter(formatter)
+        self.setLevel(level)
+        self._bar = bar
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.acquire()
+        try:
+            try:
+                msg = self.format(record)
+                # Erase bar, write log line, redraw bar — all in one write to avoid flicker
+                out = "\r\033[2K" + msg + self.terminator
+                if self._bar._text:
+                    cols = shutil.get_terminal_size((80, 24)).columns
+                    out += self._bar._text[:cols] + "\r"
+                self.stream.write(out)
+                self.stream.flush()
+            except RecursionError:
+                raise
+            except Exception:
+                self.handleError(record)
+        finally:
+            self.release()
+
+
+class _StickyProgress:
+    """
+    Pins a single-line progress bar to the bottom of the terminal.
+
+    Uses a cursor-at-start-of-bar-line convention:
+      - cursor always rests at the start of the bar line
+      - each log emit: erase bar line → write log → write bar → cursor back to start
+    Falls back silently to no-op when stderr is not a tty.
+    """
+
+    def __init__(self) -> None:
+        self._tty = sys.stderr.isatty()
+        self._text = ""
+        self._orig_handler: logging.Handler | None = None
+
+    def __enter__(self) -> "_StickyProgress":
+        if self._tty:
+            self._patch_root_logger()
+        return self
+
+    def __exit__(self, *_) -> None:
+        if self._tty and self._text:
+            sys.stderr.write("\r\033[2K\n")
+            sys.stderr.flush()
+        self._restore_root_logger()
+
+    @property
+    def is_tty(self) -> bool:
+        return self._tty
+
+    def update(self, text: str) -> None:
+        self._text = text
+        if self._tty:
+            cols = shutil.get_terminal_size((80, 24)).columns
+            sys.stderr.write(text[:cols] + "\r")
+            sys.stderr.flush()
+
+    def _patch_root_logger(self) -> None:
+        root = logging.getLogger()
+        for i, h in enumerate(root.handlers):
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                wrapper = _BarAwareHandler(h.stream, h.formatter, h.level, self)
+                root.handlers[i] = wrapper
+                self._orig_handler = h
+                return
+
+    def _restore_root_logger(self) -> None:
+        if self._orig_handler is None:
+            return
+        root = logging.getLogger()
+        for i, h in enumerate(root.handlers):
+            if isinstance(h, _BarAwareHandler):
+                root.handlers[i] = self._orig_handler
+                break
+        self._orig_handler = None
 
 
 def run_replay(
@@ -338,39 +425,44 @@ def run_replay(
             s = int(secs % 60)
             return f"{h}:{m:02d}:{s:02d}"
 
-        while current < end_dt:
-            clock.advance_to(current)
-            try:
-                bot.process()
-            except Exception as exc:
-                logger.warning("bot.process() raised at %s: %s", current, exc, exc_info=True)
+        with _StickyProgress() as progress:
+            while current < end_dt:
+                clock.advance_to(current)
+                try:
+                    bot.process()
+                except Exception as exc:
+                    logger.warning("bot.process() raised at %s: %s", current, exc, exc_info=True)
 
-            # Progress log at each strategy-candle boundary
-            if current.timestamp() % tf_secs == 0:
-                processed += 1
-                if processed % 24 == 0:
-                    n_open = len(Trade.get_open_trades())
-                    n_closed = Trade.get_trades_proxy(is_open=False)
+                # Progress update at each strategy-candle boundary
+                if current.timestamp() % tf_secs == 0:
+                    processed += 1
+                    if processed % 24 == 0:
+                        n_open = len(Trade.get_open_trades())
+                        n_closed = Trade.get_trades_proxy(is_open=False)
 
-                    elapsed_sim = (current - start_dt).total_seconds()
-                    pct = elapsed_sim / total_sim_secs if total_sim_secs > 0 else 0.0
-                    elapsed_wall = time.time() - wall_start
-                    rate = elapsed_sim / elapsed_wall if elapsed_wall > 0 else 0.0
-                    remaining_sim = (end_dt - current).total_seconds()
-                    eta_wall = remaining_sim / rate if rate > 0 else 0.0
+                        elapsed_sim = (current - start_dt).total_seconds()
+                        pct = elapsed_sim / total_sim_secs if total_sim_secs > 0 else 0.0
+                        elapsed_wall = time.time() - wall_start
+                        rate = elapsed_sim / elapsed_wall if elapsed_wall > 0 else 0.0
+                        remaining_sim = (end_dt - current).total_seconds()
+                        eta_wall = remaining_sim / rate if rate > 0 else 0.0
 
-                    bar_width = 20
-                    filled = int(bar_width * pct)
-                    bar = "█" * filled + "░" * (bar_width - filled)
+                        bar_width = 20
+                        filled = int(bar_width * pct)
+                        bar = "█" * filled + "░" * (bar_width - filled)
+                        bar_line = (
+                            f"[{bar}] {pct * 100:4.1f}%"
+                            f"  {current.strftime('%Y-%m-%d %H:%M')}"
+                            f"  open={n_open}  closed={len(n_closed)}"
+                            f"  elapsed={_fmt_dur(elapsed_wall)}  ETA={_fmt_dur(eta_wall)}"
+                        )
 
-                    logger.info(
-                        "[%s] %4.1f%%  %s  open=%d  closed=%d  elapsed=%s  ETA=%s",
-                        bar, pct * 100, current.strftime("%Y-%m-%d %H:%M"),
-                        n_open, len(n_closed),
-                        _fmt_dur(elapsed_wall), _fmt_dur(eta_wall),
-                    )
+                        progress.update(bar_line)
+                        if not progress.is_tty:
+                            # Non-tty (file redirect / docker logs): write as log line instead
+                            logger.info(bar_line)
 
-            current += timedelta(seconds=sub_step)
+                current += timedelta(seconds=sub_step)
 
         # ---------------------------------------------------------------- #
         # 9. Summary + view config                                           #
