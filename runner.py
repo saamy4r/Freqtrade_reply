@@ -391,7 +391,7 @@ def run_replay(
         # ---------------------------------------------------------------- #
         current = start_dt
         processed = 0
-        wall_start = time.time()
+        wall_start = time.monotonic()
         total_sim_secs = (end_dt - start_dt).total_seconds()
 
         def _fmt_dur(secs: float) -> str:
@@ -425,7 +425,7 @@ def run_replay(
 
                         elapsed_sim = (current - start_dt).total_seconds()
                         pct = elapsed_sim / total_sim_secs if total_sim_secs > 0 else 0.0
-                        elapsed_wall = time.time() - wall_start
+                        elapsed_wall = time.monotonic() - wall_start
                         rate = elapsed_sim / elapsed_wall if elapsed_wall > 0 else 0.0
                         remaining_sim = (end_dt - current).total_seconds()
                         eta_wall = remaining_sim / rate if rate > 0 else 0.0
