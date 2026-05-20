@@ -396,10 +396,17 @@ def run_replay(
 
         def _fmt_dur(secs: float) -> str:
             secs = max(0.0, secs)
-            h = int(secs // 3600)
+            d = int(secs // 86400)
+            h = int((secs % 86400) // 3600)
             m = int((secs % 3600) // 60)
             s = int(secs % 60)
-            return f"{h}:{m:02d}:{s:02d}"
+            if d:
+                return f"{d}d {h}h {m}m"
+            if h:
+                return f"{h}h {m}m"
+            if m:
+                return f"{m}m {s}s"
+            return f"{s}s"
 
         with _StickyProgress() as progress:
             while current < end_dt:
