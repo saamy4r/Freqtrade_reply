@@ -439,6 +439,8 @@ def run_replay(
         processed = 0
         wall_start = _wall_clock()
         total_sim_secs = (end_dt - start_dt).total_seconds()
+        _last_log_wall = wall_start
+        _LOG_INTERVAL = 30.0  # seconds between progress lines when not a TTY
 
         def _fmt_dur(secs: float) -> str:
             secs = max(0.0, secs)
@@ -465,13 +467,17 @@ def run_replay(
                 # Progress update at each strategy-candle boundary
                 if current.timestamp() % tf_secs == 0:
                     processed += 1
-                    if processed % 24 == 0:
+                    now_wall = _wall_clock()
+                    tty_due = progress.is_tty and processed % 24 == 0
+                    log_due = not progress.is_tty and now_wall - _last_log_wall >= _LOG_INTERVAL
+
+                    if tty_due or log_due:
                         n_open = len(Trade.get_open_trades())
                         n_closed = Trade.get_trades_proxy(is_open=False)
 
                         elapsed_sim = (current - start_dt).total_seconds()
                         pct = elapsed_sim / total_sim_secs if total_sim_secs > 0 else 0.0
-                        elapsed_wall = _wall_clock() - wall_start
+                        elapsed_wall = now_wall - wall_start
                         rate = elapsed_sim / elapsed_wall if elapsed_wall > 0 else 0.0
                         remaining_sim = (end_dt - current).total_seconds()
                         eta_wall = remaining_sim / rate if rate > 0 else 0.0
@@ -486,10 +492,11 @@ def run_replay(
                             f"  elapsed={_fmt_dur(elapsed_wall)}  ETA={_fmt_dur(eta_wall)}"
                         )
 
-                        progress.update(bar_line)
-                        if not progress.is_tty:
-                            # Non-tty (file redirect / docker logs): write as log line instead
+                        if tty_due:
+                            progress.update(bar_line)
+                        if log_due:
                             logger.info(bar_line)
+                            _last_log_wall = now_wall
 
                 current += timedelta(seconds=sub_step)
 
