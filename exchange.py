@@ -134,6 +134,28 @@ class ReplayExchange(Exchange):
     # OHLCV data feed — replaces live ccxt fetch
     # ------------------------------------------------------------------
 
+    def klines(self, pair_interval, copy: bool = True):
+        """
+        Returns klines from cache; falls back to the store on cache miss.
+
+        The fallback handles strategies that call dp.get_pair_dataframe() for a
+        timeframe they never declared in informative_pairs() — the manual-merge
+        pattern used by e.g. ECRV2.  Without it, those calls return an empty
+        DataFrame because the DataProvider never requested that TF via
+        refresh_latest_ohlcv, so _klines never got populated for it.
+        """
+        if pair_interval in self._klines:
+            df = self._klines[pair_interval]
+            return df.copy() if copy else df
+        pair, tf, c_type = pair_interval
+        df = self._replay_store.get_candles(pair, tf, up_to=self._replay_clock.now())
+        if not df.empty:
+            from freqtrade.enums import CandleType
+            self._klines[pair_interval] = df
+            if c_type != CandleType.SPOT:
+                self._klines[(pair, tf, CandleType.SPOT)] = df
+        return df.copy() if copy else df
+
     def refresh_latest_ohlcv(
         self,
         pair_list: list,

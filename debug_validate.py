@@ -27,9 +27,10 @@ from pathlib import Path
 sys.path.insert(0, "/freqtrade")
 sys.path.insert(0, "/freqtrade/user_data")
 
-CONFIG    = "/freqtrade/user_data/config.json"
-STRATEGY  = "ReplayDebugStrategy"
-TIMERANGE = "20260401-20260406"
+CONFIG         = "/freqtrade/user_data/config.json"
+STRATEGY       = "ReplayDebugStrategy"
+STRATEGY_INFO  = "ReplayDebugInfoStrategy"
+TIMERANGE      = "20260401-20260406"
 DATADIR   = "/freqtrade/user_data/data/binance/futures"
 DB_DIR    = "/freqtrade/user_data"
 
@@ -46,14 +47,14 @@ _WARN = "WARN"
 
 # ── replay runner ─────────────────────────────────────────────────────────── #
 
-def run(pairs: list, db_path: str, label: str) -> bool:
+def run(pairs: list, db_path: str, label: str, strategy: str = STRATEGY) -> bool:
     print(f"\n{'─' * 60}")
     print(f"  {label}")
     print(f"{'─' * 60}")
     cmd = [
         "python", "/freqtrade/user_data/freqtrade_replay/cli.py",
         "--config",   CONFIG,
-        "--strategy", STRATEGY,
+        "--strategy", strategy,
         "--pairs",    *pairs,
         "--timerange", TIMERANGE,
         "--datadir",  DATADIR,
@@ -200,10 +201,41 @@ def scenario_multi() -> bool:
     return ok
 
 
+def scenario_informative() -> bool:
+    print("\n" + "═" * 60)
+    print("  SCENARIO 3 — Informative timeframe (manual dp pattern)")
+    print("  Validates: dp.get_pair_dataframe(pair, '1h') works without")
+    print("             declaring informative_pairs() — the ECRV2 pattern.")
+    print("  If 1h data is empty : 0 trades  (FAIL)")
+    print(f"  If 1h data flows    : {EXPECTED_CLOSED} closed + 1 open = 40 total  (PASS)")
+    print("═" * 60)
+
+    db1 = f"{DB_DIR}/debug_info_1.sqlite"
+    db2 = f"{DB_DIR}/debug_info_2.sqlite"
+
+    if not run(SINGLE_PAIR, db1, "Informative-tf — run 1", strategy=STRATEGY_INFO):
+        return False
+    if not run(SINGLE_PAIR, db2, "Informative-tf — run 2", strategy=STRATEGY_INFO):
+        return False
+
+    t1 = load_trades(db1)
+    t2 = load_trades(db2)
+
+    if len(t1) == 0:
+        print(f"  {_FAIL} [informative] ZERO trades — 1h data is NOT flowing into strategy!")
+        print("         Check: exchange.klines() fallback to store is missing or broken.")
+        return False
+
+    ok  = check_determinism(t1, t2, "informative")
+    ok &= check_count(t1, EXPECTED_CLOSED, "informative")
+    return ok
+
+
 # ── main ──────────────────────────────────────────────────────────────────── #
 
 def cleanup():
-    for stem in ("debug_single_1", "debug_single_2", "debug_multi_1", "debug_multi_2"):
+    for stem in ("debug_single_1", "debug_single_2", "debug_multi_1", "debug_multi_2",
+                 "debug_info_1", "debug_info_2"):
         for suffix in ("", "-shm", "-wal"):
             p = Path(f"{DB_DIR}/{stem}.sqlite{suffix}")
             if p.exists():
@@ -213,7 +245,7 @@ def cleanup():
 def main() -> int:
     print("=" * 60)
     print("  REPLAY TOOL VALIDATION")
-    print(f"  Strategy : {STRATEGY}")
+    print(f"  Strategy : {STRATEGY} / {STRATEGY_INFO}")
     print(f"  Timerange: {TIMERANGE}  (5 days)")
     print(f"  Signals  : 24/day  (5m candles at minute==0)")
     print(f"  Hold     : 180 min (3 hours)  →  ~40 trades/pair")
@@ -222,6 +254,7 @@ def main() -> int:
     results = [
         ("Scenario 1 — single pair determinism + completeness", scenario_single()),
         ("Scenario 2 — multi-pair concurrency + determinism",   scenario_multi()),
+        ("Scenario 3 — informative timeframe (manual dp pattern)", scenario_informative()),
     ]
 
     print("\n" + "=" * 60)
