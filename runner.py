@@ -88,35 +88,55 @@ def _load_informative_pairs(
     datadir: str,
     trading_mode: str,
 ) -> None:
-    """Detect and load informative pairs declared by the strategy."""
+    """Detect and load informative pairs declared by the strategy.
+
+    Handles two cases:
+    - Extra pairs (not in whitelist): load from disk, download if missing.
+    - Existing pairs at a declared informative TF that is not yet on disk:
+      re-download that pair so all its TFs are present.
+    """
     try:
         inf_pairs = bot.strategy.informative_pairs()
     except Exception as exc:
         logger.warning("Could not read informative_pairs() from strategy: %s", exc)
         return
 
-    extra: set[str] = set()
+    extra: set[str] = set()           # pairs not in whitelist at all
+    missing_tf_pairs: list[str] = []  # whitelist pairs missing a declared TF on disk
+
     for item in inf_pairs:
         inf_pair = item[0]  # (pair, tf) or (pair, tf, candle_type)
+        inf_tf   = item[1]
         if inf_pair not in store._candles:
             extra.add(inf_pair)
+        elif store._candles[inf_pair].get(inf_tf) is None:
+            if inf_pair not in missing_tf_pairs:
+                logger.info(
+                    "Informative TF %s not on disk for %s — will download", inf_tf, inf_pair
+                )
+                missing_tf_pairs.append(inf_pair)
 
-    if not extra:
+    if not extra and not missing_tf_pairs:
         return
 
-    logger.info("Detected informative pairs not in whitelist: %s", sorted(extra))
-
-    missing: list[str] = []
-    for pair in sorted(extra):
-        found = store.load_extra_pair(pair)
-        if not found:
-            missing.append(pair)
-
-    if missing:
-        logger.info("Downloading missing informative pair data: %s", missing)
-        _download_data(config_path, missing, start_dt, end_dt, datadir, trading_mode)
-        for pair in missing:
+    # Re-download whitelist pairs that are missing a declared informative TF.
+    if missing_tf_pairs:
+        _download_data(config_path, missing_tf_pairs, start_dt, end_dt, datadir, trading_mode)
+        for pair in missing_tf_pairs:
             store.load_extra_pair(pair)
+
+    # Load / download extra pairs not in whitelist.
+    if extra:
+        logger.info("Detected informative pairs not in whitelist: %s", sorted(extra))
+        missing: list[str] = []
+        for pair in sorted(extra):
+            if not store.load_extra_pair(pair):
+                missing.append(pair)
+        if missing:
+            logger.info("Downloading missing informative pair data: %s", missing)
+            _download_data(config_path, missing, start_dt, end_dt, datadir, trading_mode)
+            for pair in missing:
+                store.load_extra_pair(pair)
 
     # Register informative pairs in the exchange market map so Freqtrade
     # doesn't reject them as unknown symbols.
@@ -247,6 +267,24 @@ def run_replay(
         store = ReplayDataStore(datadir, pairs, trading_mode=trading_mode)
         for pair in pairs:
             store.validate(pair, tf, start_dt, end_dt, startup_count)
+
+    # Proactively ensure all standard timeframes are on disk for every whitelist
+    # pair.  Strategies can call dp.get_pair_dataframe(pair, any_tf) at runtime
+    # without declaring the TF in informative_pairs() (the ECRV2 manual-merge
+    # pattern).  We can't introspect that at startup, so we guarantee all
+    # standard TFs are available upfront rather than failing silently mid-replay.
+    _std_tfs = ("1m", "5m", "15m", "1h", "4h")
+    _inf_tf_missing = [
+        pair for pair in pairs
+        if any(store._candles.get(pair, {}).get(t) is None for t in _std_tfs)
+    ]
+    if _inf_tf_missing:
+        logger.info(
+            "Some standard informative TFs missing for %s — downloading all standard TFs …",
+            _inf_tf_missing,
+        )
+        _download_data(config_path, _inf_tf_missing, start_dt, end_dt, datadir, trading_mode)
+        store = ReplayDataStore(datadir, pairs, trading_mode=trading_mode)
 
     # ------------------------------------------------------------------ #
     # 3. Virtual clock                                                      #
