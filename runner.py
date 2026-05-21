@@ -25,7 +25,7 @@ from freqtrade.wallets import Wallets
 from freqtrade.worker import Worker
 
 from .clock import VirtualClock
-from .data_store import ReplayDataStore
+from .data_store import TIMEFRAMES, ReplayDataStore
 from .exchange import ReplayExchange
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ def _download_data(
         "freqtrade", "download-data",
         "--config", config_path,
         "--pairs", *pairs,
-        "--timeframes", "1m", "5m", "15m", "1h", "4h",
+        "--timeframes", *TIMEFRAMES,
         "--timerange", f"{dl_start}-{dl_end}",
         "--trading-mode", trading_mode,
         "--datadir", str(dl_datadir),
@@ -88,40 +88,34 @@ def _load_informative_pairs(
     datadir: str,
     trading_mode: str,
 ) -> None:
-    """Detect and load informative pairs declared by the strategy.
-
-    Handles two cases:
-    - Extra pairs (not in whitelist): load from disk, download if missing.
-    - Existing pairs at a declared informative TF that is not yet on disk:
-      re-download that pair so all its TFs are present.
-    """
+    """Detect and load informative pairs declared by the strategy."""
     try:
         inf_pairs = bot.strategy.informative_pairs()
     except Exception as exc:
         logger.warning("Could not read informative_pairs() from strategy: %s", exc)
         return
 
-    extra: set[str] = set()           # pairs not in whitelist at all
-    missing_tf_pairs: list[str] = []  # whitelist pairs missing a declared TF on disk
+    extra: set[str] = set()
+    missing_tf_pairs: set[str] = set()
 
     for item in inf_pairs:
         inf_pair = item[0]  # (pair, tf) or (pair, tf, candle_type)
         inf_tf   = item[1]
-        if inf_pair not in store._candles:
+        if not store.has_pair(inf_pair):
             extra.add(inf_pair)
-        elif store._candles[inf_pair].get(inf_tf) is None:
+        elif not store.has_timeframe(inf_pair, inf_tf):
             if inf_pair not in missing_tf_pairs:
                 logger.info(
                     "Informative TF %s not on disk for %s — will download", inf_tf, inf_pair
                 )
-                missing_tf_pairs.append(inf_pair)
+                missing_tf_pairs.add(inf_pair)
 
     if not extra and not missing_tf_pairs:
         return
 
     # Re-download whitelist pairs that are missing a declared informative TF.
     if missing_tf_pairs:
-        _download_data(config_path, missing_tf_pairs, start_dt, end_dt, datadir, trading_mode)
+        _download_data(config_path, list(missing_tf_pairs), start_dt, end_dt, datadir, trading_mode)
         for pair in missing_tf_pairs:
             store.load_extra_pair(pair)
 
@@ -273,17 +267,16 @@ def run_replay(
     # without declaring the TF in informative_pairs() (the ECRV2 manual-merge
     # pattern).  We can't introspect that at startup, so we guarantee all
     # standard TFs are available upfront rather than failing silently mid-replay.
-    _std_tfs = ("1m", "5m", "15m", "1h", "4h")
-    _inf_tf_missing = [
+    inf_tf_missing = [
         pair for pair in pairs
-        if any(store._candles.get(pair, {}).get(t) is None for t in _std_tfs)
+        if any(not store.has_timeframe(pair, t) for t in TIMEFRAMES)
     ]
-    if _inf_tf_missing:
+    if inf_tf_missing:
         logger.info(
             "Some standard informative TFs missing for %s — downloading all standard TFs …",
-            _inf_tf_missing,
+            inf_tf_missing,
         )
-        _download_data(config_path, _inf_tf_missing, start_dt, end_dt, datadir, trading_mode)
+        _download_data(config_path, inf_tf_missing, start_dt, end_dt, datadir, trading_mode)
         store = ReplayDataStore(datadir, pairs, trading_mode=trading_mode)
 
     # ------------------------------------------------------------------ #

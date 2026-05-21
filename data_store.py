@@ -17,7 +17,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
+TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
 
 
 class ReplayDataStore:
@@ -44,7 +44,7 @@ class ReplayDataStore:
 
     def _load_pair(self, pair: str) -> None:
         self._candles.setdefault(pair, {})
-        for tf in _TIMEFRAMES:
+        for tf in TIMEFRAMES:
             path = self._filename(pair, tf)
             if not path.exists():
                 continue
@@ -66,6 +66,12 @@ class ReplayDataStore:
             return True
         self._load_pair(pair)
         return bool(self._candles.get(pair))
+
+    def has_pair(self, pair: str) -> bool:
+        return bool(self._candles.get(pair))
+
+    def has_timeframe(self, pair: str, tf: str) -> bool:
+        return self._candles.get(pair, {}).get(tf) is not None
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,7 +100,7 @@ class ReplayDataStore:
     def get_last_price(self, pair: str, up_to: datetime) -> float:
         """Last known close price strictly before up_to, finest resolution first."""
         up_to_ts = pd.Timestamp(up_to)
-        for tf in _TIMEFRAMES:
+        for tf in TIMEFRAMES:
             df = self._candles.get(pair, {}).get(tf)
             if df is None or df.empty:
                 continue
