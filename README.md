@@ -2,7 +2,7 @@
 
 Run your Freqtrade strategy against historical data at full speed — in minutes instead of months.
 
-It works by tricking Freqtrade into thinking it is connected to a live exchange and that time is passing normally, while actually replaying stored candle data as fast as your CPU allows. The result is a standard Freqtrade SQLite database that you can open directly in FreqUI and analyze just like a real dry-run.
+Freqtrade Replay patches the exchange interface and virtual clock so the real Freqtrade bot replays stored candle data as fast as your CPU allows. The result is a standard Freqtrade SQLite database, fully compatible with FreqUI and all Freqtrade analysis tools.
 
 ---
 
@@ -15,14 +15,14 @@ It works by tricking Freqtrade into thinking it is connected to a live exchange 
 
 ## Setup
 
-**1. Clone this repo into your `user_data` folder:**
+**1. Clone into your `user_data` folder:**
 
 ```bash
 cd /path/to/your/freqtrade/user_data
 git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
 ```
 
-**2. Add the replay service to your `docker-compose.yml`:**
+**2. Add the replay service to `docker-compose.yml`:**
 
 ```yaml
   replay:
@@ -36,7 +36,7 @@ git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
       - replay
 ```
 
-**3. Make sure your `config.json` has an `api_server` section** so FreqUI can display results afterward:
+**3. Ensure `config.json` has an `api_server` section** so FreqUI can display results afterward:
 
 ```json
 "initial_state": "running",
@@ -55,33 +55,15 @@ git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
 
 ---
 
-## Download Historical Data
-
-Before running a replay you need candle data downloaded locally. The replay uses 1m data for intra-candle stop-loss and take-profit accuracy (see [How It Works](#how-it-works)):
-
-```bash
-docker compose run --rm freqtrade download-data \
-  --config user_data/config.json \
-  --timeframes 1m 5m 15m 1h 4h \
-  --timerange 20250101-20250601 \
-  --trading-mode futures
-```
-
-> Pairs are read from `pair_whitelist` in your `config.json`.
-
-You can skip this step entirely — if data is missing or stale the tool will **auto-download** it before starting.
-
----
-
-## Run a Replay
+## Usage
 
 ```bash
 docker compose --profile replay run --rm replay \
   --strategy MyStrategy \
-  --timerange 20250301-20260501
+  --timerange 20250101-20260101
 ```
 
-That's it. When it finishes you will see a summary in the terminal:
+Missing data is downloaded automatically before the run starts. When finished, a summary is printed to the terminal:
 
 ```
   Closed trades: 42
@@ -89,69 +71,54 @@ That's it. When it finishes you will see a summary in the terminal:
   Total P&L    : +183.24 USDT
 ```
 
-### Optional flags
+### Flags
 
 | Flag | Default | Description |
 |---|---|---|
+| `--timerange` | required | Date range as `YYYYMMDD-YYYYMMDD` |
 | `--strategy` | | Strategy class name |
-| `--timerange` | required | Date range `YYYYMMDD-YYYYMMDD` |
-| `--pairs` | from config whitelist | Override which pairs to trade |
-| `--config` | `user_data/config.json` | Path to your config file |
+| `--pairs` | config whitelist | Override trading pairs |
+| `--config` | `user_data/config.json` | Path to config file |
+| `--sub-step` | `1m` | Intra-candle resolution: `1m`, `5m`, or `15m` |
 | `--slippage` | `0.0005` | Simulated bid-ask spread (0.05%) |
-| `--sub-step` | `1m` | Intra-candle resolution: `1m`, `5m`, or `15m` (see below) |
-| `--datadir` | `user_data/data/binance/futures` | Where your feather data files are |
-| `--no-fresh` | off | Keep the existing DB instead of starting clean |
+| `--datadir` | `user_data/data/binance/futures` | Path to feather data files |
+| `--no-fresh` | off | Keep existing DB instead of starting clean |
 | `--report` | off | Write a standalone HTML report to a file |
 
 ---
 
-## View Results in FreqUI
+## View Results
 
-After the replay finishes, start your normal Freqtrade dry-run:
+After the replay finishes, start your normal Freqtrade instance:
 
 ```bash
 docker compose up -d freqtrade
 ```
 
-Then open **http://localhost:8080** in your browser. Log in with the username and password from your `config.json`. You will see all trades on the chart exactly like a real dry-run.
+Open **http://localhost:8080** and log in. All trades will appear on the chart exactly as they would after a real dry-run.
 
 ---
 
 ## How It Works
 
-Freqtrade's bot logic never talks to the exchange directly — it goes through a clean interface. Freqtrade Replay replaces that interface with:
+Freqtrade Replay replaces three components at runtime:
 
-- **Fake exchange** — serves candle data from local files instead of Binance
-- **Virtual clock** — jumps forward in time instantly instead of waiting for real time
-- **Real bot** — everything else (signals, DCA, stoploss, fees, order matching) runs exactly as in production
+- **Exchange** — serves OHLCV data from local feather files instead of Binance
+- **Clock** — advances virtual time instantly instead of waiting for real time
+- **Bot** — the real `FreqtradeBot` runs unchanged: signals, DCA, stoploss, fees, and order matching all behave as in production
 
-The output is a real Freqtrade database, fully compatible with FreqUI and all Freqtrade analysis tools.
+### Intra-candle accuracy
 
-### Why 1m data matters
+Backtesting checks stops and exits only at candle close. A live bot checks continuously — so a wick that hits your stop and recovers would trigger live but be missed in a backtest.
 
-Backtesting only checks stops and exits at the candle close — so if price wicked down to your stop and recovered, it never triggers. A live bot would have caught that.
+By default the replay steps through time at 1-minute resolution using real 1m candles, so stops and take-profits fire the same way they would in production. The strategy itself still runs on its own timeframe (15m, 1h, etc.).
 
-The replay steps through time at 1-minute resolution using real 1m data by default, so stops and take-profits fire the same way they would live. Your strategy still runs on its own timeframe (15m, 1h, etc.) — 1m is only used for order fills.
+### Speed vs accuracy (`--sub-step`)
 
-This is also why repainting indicators and look-ahead bias show up here but not in backtesting.
-
-### Speed vs accuracy tradeoff (`--sub-step`)
-
-The sub-step controls how finely time is sliced inside each strategy candle:
-
-| Flag | Tick interval | Stop/TP accuracy | Approximate speedup |
+| | Interval | Stop/TP accuracy | Speed |
 |---|---|---|---|
-| `--sub-step 1m` | every 1 minute | highest | 1× (baseline) |
-| `--sub-step 5m` | every 5 minutes | good | ~5× faster |
-| `--sub-step 15m` | every 15 minutes | rough | ~15× faster |
+| `--sub-step 1m` | 1 minute | highest | baseline |
+| `--sub-step 5m` | 5 minutes | good | ~5× faster |
+| `--sub-step 15m` | 15 minutes | approximate | ~15× faster |
 
-Use `--sub-step 5m` for quick iteration during strategy development and switch back to `1m` for final validation.
-
----
-
-## Tips
-
-- **Missing data is auto-downloaded.** If any pair or timeframe is missing the tool downloads it automatically before starting — including all standard timeframes (1m, 5m, 15m, 1h, 4h) so strategies that call `dp.get_pair_dataframe()` for any timeframe will always work.
-- **Informative pairs are detected automatically.** If your strategy declares informative pairs (e.g. BTC as a market filter) they are loaded or downloaded without any extra configuration.
-- **Delisted or renamed pairs exit cleanly.** If a pair can no longer be downloaded (e.g. MATIC was renamed to POL on Binance) the tool prints a clear error listing which pairs to remove from your config rather than crashing with a raw exception.
-- **Viewing results mid-run is not meaningful.** The replay runs at maximum speed, not wall-clock time. The database is being written in real time but everything completes in one burst — wait for the summary before opening FreqUI.
+Use `--sub-step 5m` during development and `1m` for final validation.
