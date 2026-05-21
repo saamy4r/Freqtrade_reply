@@ -212,6 +212,7 @@ def run_replay(
     datadir: str = "/freqtrade/user_data/data/binance/futures",
     fresh: bool = True,
     report_path: str | None = None,
+    sub_step: int = 60,
 ) -> None:
     if fresh:
         _drop_db(db_url)
@@ -423,13 +424,12 @@ def run_replay(
         #     from recomputing indicators on every 1m tick — it only runs    #
         #     when a new strategy-timeframe candle has closed.               #
         # ---------------------------------------------------------------- #
-        sub_step = 60  # 1-minute sub-candle resolution
         bot.strategy.process_only_new_candles = True
 
         total_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
         logger.info(
-            "Replay ready: %s → %s  |  %d candles × %d pairs  |  tf=%s  |  slippage=%.4f%%  |  sub-step=1m",
-            start_dt.date(), end_dt.date(), total_candles, len(pairs), tf, slippage_pct * 100,
+            "Replay ready: %s → %s  |  %d candles × %d pairs  |  tf=%s  |  slippage=%.4f%%  |  sub-step=%ds",
+            start_dt.date(), end_dt.date(), total_candles, len(pairs), tf, slippage_pct * 100, sub_step,
         )
 
         # ---------------------------------------------------------------- #

@@ -106,6 +106,13 @@ def main() -> None:
         help="Write a standalone HTML report (equity curve + per-pair P&L) to PATH. "
              "Example: /freqtrade/user_data/replay_report.html",
     )
+    p.add_argument(
+        "--sub-step",
+        choices=["1m", "5m", "15m"],
+        default="1m",
+        help="Intra-candle resolution for stop/limit order checks (default: 1m). "
+             "5m is ~5× faster, 15m is ~15× faster — at the cost of stop-loss accuracy.",
+    )
 
     args = p.parse_args()
 
@@ -121,6 +128,8 @@ def main() -> None:
 
     pairs = args.pairs or _pairs_from_config(args.config)
 
+    sub_step_secs = {"1m": 60, "5m": 300, "15m": 900}[args.sub_step]
+
     run_replay(
         config_path=args.config,
         pairs=pairs,
@@ -132,6 +141,7 @@ def main() -> None:
         datadir=args.datadir,
         fresh=not args.no_fresh,
         report_path=args.report,
+        sub_step=sub_step_secs,
     )
 
 
