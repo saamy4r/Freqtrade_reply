@@ -259,8 +259,19 @@ def run_replay(
         _download_data(config_path, missing, start_dt, end_dt, datadir, trading_mode)
         # Reload store with fresh files
         store = ReplayDataStore(datadir, pairs, trading_mode=trading_mode)
+        still_missing: list[str] = []
         for pair in pairs:
-            store.validate(pair, tf, start_dt, end_dt, startup_count)
+            try:
+                store.validate(pair, tf, start_dt, end_dt, startup_count)
+            except ValueError as exc:
+                still_missing.append(pair)
+                logger.error(
+                    "Pair %s unavailable after download (delisted or renamed?): %s", pair, exc
+                )
+        if still_missing:
+            raise SystemExit(
+                f"Cannot replay — remove these pairs from your config: {still_missing}"
+            )
 
     # Proactively ensure all standard timeframes are on disk for every whitelist
     # pair.  Strategies can call dp.get_pair_dataframe(pair, any_tf) at runtime
