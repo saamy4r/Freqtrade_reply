@@ -54,6 +54,8 @@ def _download_data(
     trading_mode: str = "futures",
 ) -> None:
     """Auto-download missing/stale OHLCV data via the freqtrade CLI."""
+    import pandas as pd
+
     # freqtrade download-data appends /<trading_mode> to --datadir automatically.
     # Our datadir already ends in /futures, so strip it to avoid double-nesting.
     dl_datadir = Path(datadir)
@@ -61,8 +63,41 @@ def _download_data(
         dl_datadir = dl_datadir.parent
 
     # Go back 90 days before start to cover any startup_candle_count warmup
-    dl_start = (start_dt - timedelta(days=90)).strftime("%Y%m%d")
+    dl_start_dt = start_dt - timedelta(days=90)
+    dl_start = dl_start_dt.strftime("%Y%m%d")
     dl_end = (end_dt + timedelta(days=1)).strftime("%Y%m%d")
+
+    # freqtrade download-data only appends forward — it won't extend an existing
+    # file backwards.  Delete files whose earliest candle is after dl_start_dt so
+    # they are fetched fresh with the full warmup range.
+    need_ts = pd.Timestamp(dl_start_dt).tz_localize("UTC")
+    actual_datadir = Path(datadir)
+    for pair in pairs:
+        base = pair.replace("/", "_").replace(":", "_")
+        for tf in TIMEFRAMES:
+            path = actual_datadir / f"{base}-{tf}-{trading_mode}.feather"
+            if not path.exists():
+                continue
+            try:
+                df = pd.read_feather(path, columns=["date"])
+                if df.empty:
+                    continue
+                earliest = df["date"].iloc[0]
+                if hasattr(earliest, "tzinfo") and earliest.tzinfo is None:
+                    earliest = earliest.tz_localize("UTC")
+                earliest = pd.Timestamp(earliest)
+                if earliest.tzinfo is None:
+                    earliest = earliest.tz_localize("UTC")
+                if earliest > need_ts:
+                    logger.info(
+                        "Removing %s (starts %s, need data before %s) — will re-download",
+                        path.name, earliest.isoformat(), dl_start_dt.isoformat(),
+                    )
+                    path.unlink()
+            except Exception as exc:
+                logger.warning("Could not inspect %s: %s — removing to force fresh download", path.name, exc)
+                path.unlink(missing_ok=True)
+
     cmd = [
         "freqtrade", "download-data",
         "--config", config_path,
