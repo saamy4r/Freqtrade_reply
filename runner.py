@@ -70,7 +70,8 @@ def _download_data(
     # freqtrade download-data only appends forward — it won't extend an existing
     # file backwards.  Delete files whose earliest candle is after dl_start_dt so
     # they are fetched fresh with the full warmup range.
-    need_ts = pd.Timestamp(dl_start_dt).tz_localize("UTC")
+    _need = pd.Timestamp(dl_start_dt)
+    need_ts = _need.tz_convert("UTC") if _need.tzinfo is not None else _need.tz_localize("UTC")
     actual_datadir = Path(datadir)
     for pair in pairs:
         base = pair.replace("/", "_").replace(":", "_")
