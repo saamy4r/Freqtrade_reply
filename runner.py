@@ -495,7 +495,14 @@ def run_replay(
                         if tty_due:
                             progress.update(bar_line)
                         if log_due:
-                            logger.info(bar_line)
+                            logger.info(
+                                "%4.1f%%  %s  open=%-2d closed=%-4d elapsed=%s  ETA=%s",
+                                pct * 100,
+                                current.strftime("%Y-%m-%d %H:%M"),
+                                n_open, len(n_closed),
+                                _fmt_dur(elapsed_wall),
+                                _fmt_dur(eta_wall),
+                            )
                             _last_log_wall = now_wall
 
                 current += timedelta(seconds=sub_step)
