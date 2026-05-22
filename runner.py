@@ -7,6 +7,7 @@ Patch surface beyond ReplayExchange:
 """
 
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -152,7 +153,10 @@ class _StickyProgress:
     _REFRESH = 0.2
 
     def __init__(self) -> None:
-        self._tty = sys.stderr.isatty()
+        # Disable ANSI bar inside Docker even when a pseudo-TTY is allocated —
+        # escape codes corrupt docker logs output.
+        in_docker = os.path.exists("/.dockerenv")
+        self._tty = sys.stderr.isatty() and not in_docker
         self._text = ""
         self._lock = __import__("threading").Lock()
         self._stop = __import__("threading").Event()
