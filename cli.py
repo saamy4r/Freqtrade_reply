@@ -88,7 +88,7 @@ def main() -> None:
              "Controls order fill price and entry/exit pricing.",
     )
     p.add_argument(
-        "--db", default="sqlite:////freqtrade/user_data/tradesv3.sqlite",
+        "--db", default="sqlite:////freqtrade/user_data/tradesv3_replay.sqlite",
         help="SQLite DB URL for replay results. Compatible with freqtrade analysis tools.",
     )
     p.add_argument(

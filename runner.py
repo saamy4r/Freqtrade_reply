@@ -248,7 +248,7 @@ def run_replay(
     end_dt: datetime,
     strategy: str = "GKD_FisherTransformV4",
     slippage_pct: float = 0.0005,
-    db_url: str = "sqlite:////freqtrade/user_data/tradesv3.sqlite",
+    db_url: str = "sqlite:////freqtrade/user_data/tradesv3_replay.sqlite",
     datadir: str = "/freqtrade/user_data/data/binance/futures",
     fresh: bool = True,
     report_path: str | None = None,
@@ -551,7 +551,7 @@ def run_replay(
         # 9. Summary + view config                                           #
         # ---------------------------------------------------------------- #
         _print_summary(db_url, report_path=report_path)
-        print("  View in FreqUI: docker compose up freqtrade")
+        print("  View in FreqUI: docker compose --profile replay-ui up replay-ui")
         print()
 
     finally:
