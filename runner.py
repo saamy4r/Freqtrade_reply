@@ -242,17 +242,18 @@ class _StickyProgress:
 
 
 def _update_viewer_config(config_path: str, strategy: str) -> None:
-    """Stamp the strategy name into config_replay_viewer.json so replay-ui loads it."""
+    """Create or update config_replay_viewer.json so replay-ui loads the correct strategy."""
     viewer_cfg = Path(config_path).parent / "config_replay_viewer.json"
-    if not viewer_cfg.exists():
-        return
     try:
         import json
-        cfg = json.loads(viewer_cfg.read_text())
+        cfg = json.loads(viewer_cfg.read_text()) if viewer_cfg.exists() else {}
+        cfg.setdefault("db_url", "sqlite:////freqtrade/user_data/tradesv3_replay.sqlite")
+        cfg.setdefault("initial_state", "stopped")
+        cfg.setdefault("dry_run", True)
         cfg["strategy"] = strategy
         viewer_cfg.write_text(json.dumps(cfg, indent=2) + "\n")
     except Exception as exc:
-        logger.warning("Could not update replay viewer config: %s", exc)
+        logger.warning("Could not write replay viewer config: %s", exc)
 
 
 def run_replay(

@@ -56,19 +56,7 @@ git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
 
 The `replay-ui` service starts automatically alongside the replay — no second terminal needed.
 
-**3. Create `user_data/config_replay_viewer.json`:**
-
-```json
-{
-  "db_url": "sqlite:////freqtrade/user_data/tradesv3_replay.sqlite",
-  "initial_state": "stopped",
-  "dry_run": true
-}
-```
-
-This override config points `replay-ui` at the replay's isolated database and puts the bot in stopped state so it serves the FreqUI without making any trades. The strategy name is injected automatically at runtime from the `--strategy` flag.
-
-**4. Ensure `config.json` has an `api_server` section:**
+**3. Ensure `config.json` has an `api_server` section:**
 
 ```json
 "api_server": {
@@ -119,7 +107,7 @@ Missing data is downloaded automatically before the run starts. When finished, a
 
 ## View Results in FreqUI
 
-FreqUI starts automatically on **http://localhost:8082** when you run the replay. Log in with the `username` and `password` from your `config.json`'s `api_server` section.
+FreqUI starts automatically on **http://localhost:8082** when you run the replay — no extra setup required. Log in with the `username` and `password` from your `config.json`'s `api_server` section.
 
 Trades appear in real time as the replay progresses. The bot is in `stopped` state so it displays results without interfering with the replay or placing any trades.
 
