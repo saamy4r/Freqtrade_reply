@@ -126,7 +126,7 @@ Trades appear in real time as the replay progresses. The bot is in `stopped` sta
 After the replay finishes, `replay-ui` keeps running so you can continue browsing results. Stop it when done:
 
 ```bash
-docker compose stop replay-ui
+docker stop freqtrade_replay_ui
 ```
 
 ### Isolation from your live bot
