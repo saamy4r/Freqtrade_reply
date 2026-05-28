@@ -241,6 +241,20 @@ class _StickyProgress:
             self._draw()
 
 
+def _update_viewer_config(config_path: str, strategy: str) -> None:
+    """Stamp the strategy name into config_replay_viewer.json so replay-ui loads it."""
+    viewer_cfg = Path(config_path).parent / "config_replay_viewer.json"
+    if not viewer_cfg.exists():
+        return
+    try:
+        import json
+        cfg = json.loads(viewer_cfg.read_text())
+        cfg["strategy"] = strategy
+        viewer_cfg.write_text(json.dumps(cfg, indent=2) + "\n")
+    except Exception as exc:
+        logger.warning("Could not update replay viewer config: %s", exc)
+
+
 def run_replay(
     config_path: str,
     pairs: list[str],
@@ -254,6 +268,11 @@ def run_replay(
     report_path: str | None = None,
     sub_step: int = 60,
 ) -> None:
+    # Write strategy into config_replay_viewer.json before replay-ui reads it.
+    # replay-ui (freqtrade) takes ~2-3s to initialise before it checks the strategy,
+    # so this write races ahead. restart: on-failure in docker-compose is the safety net.
+    _update_viewer_config(config_path, strategy)
+
     if fresh:
         _drop_db(db_url)
 
