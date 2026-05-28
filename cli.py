@@ -79,8 +79,8 @@ def main() -> None:
         help="Date range as YYYYMMDD-YYYYMMDD, e.g. 20241101-20241115",
     )
     p.add_argument(
-        "--strategy", default="GKD_FisherTransformV4",
-        help="Strategy class name (default: GKD_FisherTransformV4)",
+        "--strategy", default="MyStrategy",
+        help="Strategy class name (default: MyStrategy)",
     )
     p.add_argument(
         "--slippage", type=float, default=0.0005,
