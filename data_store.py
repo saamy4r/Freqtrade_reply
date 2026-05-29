@@ -7,9 +7,13 @@ Rules:
   mirroring live bot behaviour (drop_incomplete=True).
 - get_last_price() uses the finest available timeframe (1m > 5m > 15m > 1h > 4h)
   so that order-fill price is as accurate as possible within each candle.
+- calculate_funding_fees() uses local funding_rate and mark feather files.
+  Formula: Σ(funding_rate × mark_price × amount) per funding interval,
+  negated for longs (identical to freqtrade's calculate_funding_fees).
 """
 
 import logging
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +24,13 @@ logger = logging.getLogger(__name__)
 TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
 
 
+def _normalise_dt(series: "pd.Series") -> "pd.Series":
+    """Coerce a datetime column to UTC nanoseconds, regardless of source precision."""
+    if series.dt.tz is None:
+        series = series.dt.tz_localize("UTC")
+    return series.dt.as_unit("ns")
+
+
 class ReplayDataStore:
     def __init__(self, data_dir: str | Path, pairs: list[str], trading_mode: str = "futures") -> None:
         self._data_dir = Path(data_dir)
@@ -27,6 +38,10 @@ class ReplayDataStore:
         self._trading_mode = trading_mode
         # pair -> timeframe -> DataFrame (sorted ascending by 'date')
         self._candles: dict[str, dict[str, pd.DataFrame]] = {}
+        # pair -> DataFrame  (funding rate; open column = rate fraction)
+        self._funding_rates: dict[str, pd.DataFrame] = {}
+        # pair -> DataFrame  (mark price; open column = mark price in quote)
+        self._mark_prices: dict[str, pd.DataFrame] = {}
         self._load_all()
 
     # ------------------------------------------------------------------
@@ -44,6 +59,8 @@ class ReplayDataStore:
 
     def _load_pair(self, pair: str) -> None:
         self._candles.setdefault(pair, {})
+        base = pair.replace("/", "_").replace(":", "_")
+
         for tf in TIMEFRAMES:
             path = self._filename(pair, tf)
             if not path.exists():
@@ -58,6 +75,25 @@ class ReplayDataStore:
                 pair, tf, len(df),
                 df.iloc[0]["date"].isoformat(), df.iloc[-1]["date"].isoformat(),
             )
+
+        # Funding rate — try 8h (Binance default) then 1h
+        for tf in ("8h", "1h"):
+            path = self._data_dir / f"{base}-{tf}-funding_rate.feather"
+            if not path.exists():
+                continue
+            df = pd.read_feather(path)[["date", "open"]].sort_values("date").reset_index(drop=True)
+            df["date"] = _normalise_dt(df["date"])
+            self._funding_rates[pair] = df
+            logger.info("Loaded %s funding_rate (%s): %d rows", pair, tf, len(df))
+            break
+
+        # Mark price — always 1h on Binance
+        path = self._data_dir / f"{base}-1h-mark.feather"
+        if path.exists():
+            df = pd.read_feather(path)[["date", "open"]].sort_values("date").reset_index(drop=True)
+            df["date"] = _normalise_dt(df["date"])
+            self._mark_prices[pair] = df
+            logger.info("Loaded %s mark price (1h): %d rows", pair, len(df))
 
     def load_extra_pair(self, pair: str) -> bool:
         """Load data for an informative pair not in the original pairs list.
@@ -127,6 +163,61 @@ class ReplayDataStore:
             "low": float(row["low"]),
             "close": float(row["close"]),
         }
+
+    def calculate_funding_fees(
+        self,
+        pair: str,
+        amount: float,
+        is_short: bool,
+        open_date: datetime,
+        close_date: datetime,
+    ) -> float:
+        """
+        Sum funding fees for a trade over [open_date, close_date].
+
+        fee = Σ (funding_rate × mark_price × amount) for each funding event in the window.
+        Positive for shorts when rate > 0 (shorts receive), negative for longs (longs pay).
+        Identical to freqtrade's calculate_funding_fees formula.
+        """
+        funding_df = self._funding_rates.get(pair)
+        mark_df = self._mark_prices.get(pair)
+
+        if funding_df is None or funding_df.empty or mark_df is None or mark_df.empty:
+            return 0.0
+
+        def _to_ts(dt: datetime) -> pd.Timestamp:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return pd.Timestamp(dt)
+
+        open_ts = _to_ts(open_date)
+        close_ts = _to_ts(close_date)
+
+        fund_slice = funding_df[
+            (funding_df["date"] >= open_ts) & (funding_df["date"] <= close_ts)
+        ].copy()
+
+        if fund_slice.empty:
+            return 0.0
+
+        # Match each funding event to the nearest mark price (within 1h tolerance)
+        merged = pd.merge_asof(
+            fund_slice.rename(columns={"open": "fund_rate"}).sort_values("date"),
+            mark_df.rename(columns={"open": "mark_price"}).sort_values("date"),
+            on="date",
+            tolerance=pd.Timedelta("1h"),
+            direction="nearest",
+        )
+
+        merged = merged.dropna(subset=["mark_price"])
+        if merged.empty:
+            return 0.0
+
+        fees = float((merged["fund_rate"] * merged["mark_price"] * amount).sum())
+        if math.isnan(fees):
+            fees = 0.0
+
+        return fees if is_short else -fees
 
     def validate(
         self,

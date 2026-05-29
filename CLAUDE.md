@@ -152,10 +152,11 @@ All patches are restored in a `try/finally` block in `run_replay()`.
 
 ## Known divergences from live trading
 
-1. **Funding fees** — always 0.0. Futures funding fees depend on real-time funding rate data that is not stored in OHLCV feather files.
-2. **Slippage model** — simplified half-spread applied uniformly. Real slippage is order-size dependent and varies by liquidity.
-3. **Order book depth** — synthetic; always has infinite liquidity at bid/ask. Market impact is not modelled.
-4. **Intra-candle price path** — only high/low bounds are known; the actual price path within a candle is not simulated (a wick could touch the stoploss and recover, and the exact fill timing within the candle is unknown).
+1. **Slippage model** — simplified half-spread applied uniformly. Real slippage is order-size dependent and varies by liquidity.
+2. **Order book depth** — synthetic; always has infinite liquidity at bid/ask. Market impact is not modelled.
+3. **Intra-candle price path** — only high/low bounds are known; the actual price path within a candle is not simulated (a wick could touch the stoploss and recover, and the exact fill timing within the candle is unknown).
+
+Funding fees were previously a known divergence but are now fully implemented using the local `funding_rate` and `mark` feather files downloaded alongside OHLCV data.
 
 ---
 

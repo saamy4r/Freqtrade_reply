@@ -9,7 +9,7 @@ Patch surface (methods overridden here):
   refresh_latest_ohlcv→ serve from ReplayDataStore gated by VirtualClock
   fetch_ticker        → synthesise from last known candle close ± spread
   fetch_l2_order_book → synthesise bid/ask used by _dry_is_price_crossed()
-  get_funding_fees    → 0.0  (known divergence #1 — see design doc)
+  get_funding_fees    → computed from local funding_rate + mark feather files
   set_leverage        → no-op
   set_margin_mode     → no-op
   get_positions       → {} (futures position fetching not needed in dry-run)
@@ -319,7 +319,9 @@ class ReplayExchange(Exchange):
     def get_funding_fees(
         self, pair: str, amount: float, is_short: bool, open_date: datetime
     ) -> float:
-        return 0.0
+        return self._replay_store.calculate_funding_fees(
+            pair, amount, is_short, open_date, self._replay_clock.now()
+        )
 
     def get_max_leverage(self, pair: str, stake_amount: float | None) -> float:
         return 125.0  # Binance futures max; lets strategy.leverage() value pass through unchanged
