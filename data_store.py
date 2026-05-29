@@ -87,13 +87,31 @@ class ReplayDataStore:
             logger.info("Loaded %s funding_rate (%s): %d rows", pair, tf, len(df))
             break
 
-        # Mark price — always 1h on Binance
-        path = self._data_dir / f"{base}-1h-mark.feather"
-        if path.exists():
+        # Mark price — 1h on Binance, but fall back to 8h (base freqtrade default)
+        for tf in ("1h", "8h"):
+            path = self._data_dir / f"{base}-{tf}-mark.feather"
+            if not path.exists():
+                continue
             df = pd.read_feather(path)[["date", "open"]].sort_values("date").reset_index(drop=True)
             df["date"] = _normalise_dt(df["date"])
             self._mark_prices[pair] = df
-            logger.info("Loaded %s mark price (1h): %d rows", pair, len(df))
+            logger.info("Loaded %s mark price (%s): %d rows", pair, tf, len(df))
+            break
+
+        # Funding fees silently evaluate to 0.0 when either input is missing.
+        # Warn loudly so the user knows the replay is diverging from live results.
+        if self._trading_mode == "futures":
+            missing = []
+            if pair not in self._funding_rates:
+                missing.append("funding_rate")
+            if pair not in self._mark_prices:
+                missing.append("mark")
+            if missing:
+                logger.warning(
+                    "%s: no %s data found in %s — funding fees will be 0.0 for this pair "
+                    "(re-run download-data with --trading-mode futures to fetch it)",
+                    pair, " and ".join(missing), self._data_dir,
+                )
 
     def load_extra_pair(self, pair: str) -> bool:
         """Load data for an informative pair not in the original pairs list.

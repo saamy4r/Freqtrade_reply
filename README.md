@@ -22,7 +22,7 @@ cd /path/to/your/freqtrade/user_data
 git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
 ```
 
-**2. Add the replay services to `docker-compose.yml`:**
+**2. Add the replay service to `docker-compose.yml`:**
 
 ```yaml
   replay:
@@ -32,43 +32,8 @@ git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
     entrypoint:
       - python
       - /freqtrade/user_data/freqtrade_replay/cli.py
-    depends_on:
-      - replay-ui
     profiles:
       - replay
-
-  replay-ui:
-    image: freqtradeorg/freqtrade:stable_plot
-    container_name: freqtrade_replay_ui
-    restart: on-failure
-    volumes:
-      - "./user_data:/freqtrade/user_data"
-    ports:
-      - "127.0.0.1:8082:8080"
-    command: >
-      trade
-      --config user_data/config.json
-      --config user_data/config_replay_viewer.json
-    profiles:
-      - replay
-      - replay-ui
-```
-
-The `replay-ui` service starts automatically alongside the replay — no second terminal needed.
-
-**3. Ensure `config.json` has an `api_server` section:**
-
-```json
-"api_server": {
-    "enabled": true,
-    "listen_ip_address": "0.0.0.0",
-    "listen_port": 8080,
-    "verbosity": "error",
-    "enable_openapi": false,
-    "jwt_secret_key": "supersecretjwt",
-    "username": "freqtrade",
-    "password": "yourpassword"
-}
 ```
 
 ---
@@ -107,15 +72,27 @@ Missing data is downloaded automatically before the run starts. When finished, a
 
 ## View Results in FreqUI
 
-FreqUI starts automatically on **http://localhost:8082** when you run the replay — no extra setup required. Log in with the `username` and `password` from your `config.json`'s `api_server` section.
-
-Trades appear in real time as the replay progresses. The replay-ui runs in `dry_run` mode against the isolated `tradesv3_replay.sqlite` database, so your live bot is never affected. Stop it when you are done viewing to prevent the replay-ui from accumulating its own dry-run trades in the replay database.
-
-After the replay finishes, `replay-ui` keeps running so you can continue browsing results. Stop it when done:
+The replay writes a standard SQLite database (`tradesv3_replay.sqlite`) that any
+freqtrade dry-run can serve to FreqUI. After the replay finishes, point a normal
+freqtrade bot at that database to browse trades and charts:
 
 ```bash
-docker stop freqtrade_replay_ui
+freqtrade trade \
+  --config user_data/config.json \
+  --db-url sqlite:////freqtrade/user_data/tradesv3_replay.sqlite \
+  --dry-run
 ```
+
+Open FreqUI at the port from your `config.json`'s `api_server` section and log in
+with its `username` / `password`. Because this viewer bot runs at real
+wall-clock time, charts for the historical replay trades load from your local
+feather data, and it never interferes with the replay (which has already
+finished). Stop the viewer when done.
+
+> A live, concurrent FreqUI was intentionally removed: a viewer bot running
+> *during* the replay processes pairs at the current wall-clock time, which both
+> pollutes the shared replay database with its own trades and cannot render
+> charts for the historical (past-dated) replay trades.
 
 ### Isolation from your live bot
 

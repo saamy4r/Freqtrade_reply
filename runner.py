@@ -241,44 +241,6 @@ class _StickyProgress:
             self._draw()
 
 
-def _clear_external_pair_locks(end_dt: datetime) -> None:
-    """Delete pair locks whose lock_time is beyond the simulation window.
-
-    replay-ui runs at real wall-clock time (e.g. 2026) while the simulation
-    covers a past period (e.g. 2024-2025).  Any lock with lock_time > end_dt
-    was created by an external process and must not be allowed to block the
-    replay from entering trades.
-    """
-    try:
-        from freqtrade.persistence import PairLock
-        from sqlalchemy import delete as _sa_delete
-        stmt = _sa_delete(PairLock).where(PairLock.lock_time > end_dt)
-        PairLock.session.execute(stmt)
-        PairLock.session.commit()
-    except Exception as exc:
-        try:
-            from freqtrade.persistence import PairLock as _PL
-            _PL.session.rollback()
-        except Exception:
-            pass
-        logger.debug("Could not clear external pair locks: %s", exc)
-
-
-def _update_viewer_config(config_path: str, strategy: str) -> None:
-    """Create or update config_replay_viewer.json so replay-ui loads the correct strategy."""
-    viewer_cfg = Path(config_path).parent / "config_replay_viewer.json"
-    try:
-        import json
-        cfg = json.loads(viewer_cfg.read_text()) if viewer_cfg.exists() else {}
-        cfg.setdefault("db_url", "sqlite:////freqtrade/user_data/tradesv3_replay.sqlite")
-        cfg.setdefault("initial_state", "running")
-        cfg.setdefault("dry_run", True)
-        cfg["strategy"] = strategy
-        viewer_cfg.write_text(json.dumps(cfg, indent=2) + "\n")
-    except Exception as exc:
-        logger.warning("Could not write replay viewer config: %s", exc)
-
-
 def run_replay(
     config_path: str,
     pairs: list[str],
@@ -292,11 +254,6 @@ def run_replay(
     report_path: str | None = None,
     sub_step: int = 60,
 ) -> None:
-    # Write strategy into config_replay_viewer.json before replay-ui reads it.
-    # replay-ui (freqtrade) takes ~2-3s to initialise before it checks the strategy,
-    # so this write races ahead. restart: on-failure in docker-compose is the safety net.
-    _update_viewer_config(config_path, strategy)
-
     if fresh:
         _drop_db(db_url)
 
@@ -542,7 +499,6 @@ def run_replay(
         with _StickyProgress() as progress:
             while current < end_dt:
                 clock.advance_to(current)
-                _clear_external_pair_locks(end_dt)
                 try:
                     bot.process()
                 except Exception as exc:
@@ -592,10 +548,14 @@ def run_replay(
                 current += timedelta(seconds=sub_step)
 
         # ---------------------------------------------------------------- #
-        # 9. Summary + view config                                           #
+        # 9. Summary                                                         #
         # ---------------------------------------------------------------- #
         _print_summary(db_url, report_path=report_path)
-        print("  View in FreqUI: docker compose --profile replay-ui up replay-ui")
+        print(
+            "  View results: point a freqtrade dry-run at the replay DB, e.g.\n"
+            "    freqtrade trade --config user_data/config.json "
+            "--db-url sqlite:////freqtrade/user_data/tradesv3_replay.sqlite --dry-run"
+        )
         print()
 
     finally:

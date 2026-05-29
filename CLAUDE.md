@@ -37,23 +37,29 @@ The project lives at `/freqtrade/user_data/freqtrade_replay/` inside the contain
 
 ## Docker setup
 
-Two services in `docker-compose.yml` (one level above `user_data/`):
+The `replay` service in `docker-compose.yml` (one level above `user_data/`):
 
 ### `replay` service
 - Image: `ghcr.io/saamy4r/freqtrade-replay:latest` (built from `Dockerfile`)
 - Profile: `replay`
-- Depends on: `replay-ui` (starts it automatically)
 - Entrypoint: `python /freqtrade/user_data/freqtrade_replay/cli.py`
 - Run with: `docker compose --profile replay run --rm replay --strategy MyStrategy --timerange 20241101-20241115`
 
-### `replay-ui` service
-- Image: `freqtradeorg/freqtrade:stable_plot` (standard Freqtrade)
-- Profile: `replay` and `replay-ui`
-- Container name: `freqtrade_replay_ui`
-- Port: `127.0.0.1:8082:8080`
-- Restart: `on-failure` (retries if strategy not yet written to config)
-- Command: `trade --config user_data/config.json --config user_data/config_replay_viewer.json`
-- Stop with: `docker stop freqtrade_replay_ui`
+### Viewing results in FreqUI
+
+There is **no** dedicated live-viewer service. A concurrent FreqUI bot was
+deliberately removed: running a viewer at real wall-clock time *during* the
+replay both pollutes the shared `tradesv3_replay.sqlite` with its own trades and
+cannot render charts for the historical (past-dated) replay trades, because its
+DataProvider only holds the current wall-clock window.
+
+To browse results, run a normal freqtrade dry-run against the replay DB **after**
+the replay finishes:
+
+```
+freqtrade trade --config user_data/config.json \
+  --db-url sqlite:////freqtrade/user_data/tradesv3_replay.sqlite --dry-run
+```
 
 ### `freqtrade` service (existing live bot, unrelated)
 - Port: `127.0.0.1:8081:8080`
@@ -105,34 +111,19 @@ Subclasses `freqtrade.exchange.Exchange`. Overrides:
 
 `run_replay()` does, in order:
 
-1. **`_update_viewer_config()`** — writes `config_replay_viewer.json` with the strategy name (creates it from scratch if missing)
-2. **`_drop_db()`** — deletes `tradesv3_replay.sqlite` (+ WAL files) when `fresh=True`
-3. **Data validation** — validates all pairs, auto-downloads if data is missing or starts too late
-4. **Standard TF preload** — downloads all standard timeframes proactively (strategies may call `dp.get_pair_dataframe()` for any TF without declaring it in `informative_pairs()`)
-5. **`VirtualClock.start()`** — freeze time at `data_start` (= `start_dt - startup_candle_count × tf_secs`)
-6. **`ReplayExchange` construction**
-7. **Patch `ExchangeResolver.load_exchange`** → returns our exchange
-8. **Patch `Worker._sleep`** → advances virtual clock instead of blocking
-9. **Patch `Wallets.record_wallet_state`** → upsert semantics (avoids UNIQUE constraint collision when multiple records share the same day-floor timestamp)
-10. **`FreqtradeBot(config)`** initialisation
-11. **`_load_informative_pairs()`** — detects and loads informative pairs declared by the strategy
-12. **Main loop** — steps at `sub_step` seconds (default 60s = 1m), calls `_clear_external_pair_locks()` then `bot.process()` at each step
-13. **Summary + HTML report** (optional)
-14. **Restore all patches** in `finally` block
-
-#### Pair lock isolation
-
-`_clear_external_pair_locks(end_dt)` runs before every `bot.process()`. It deletes any `PairLock` row whose `lock_time > end_dt`. This removes locks created by `replay-ui` (which runs at real wall-clock time, e.g. 2026) without touching locks legitimately created by the replay strategy (which run at virtual simulation time, e.g. 2024-2025). This allows `replay-ui` to run with `initial_state: running` (needed for FreqUI chart display) without interfering with the replay.
-
-#### `config_replay_viewer.json` (auto-generated)
-
-`_update_viewer_config()` creates or updates this file at the start of every replay run. It always stamps in:
-- `db_url` → `tradesv3_replay.sqlite`
-- `initial_state` → `running` (required for FreqUI chart display — stopped state leaves the DataProvider empty)
-- `dry_run` → `true`
-- `strategy` → the `--strategy` argument passed to the replay
-
-The file is written before `replay-ui` finishes initialising (~2-3s for exchange init), so in the common case it wins the race. `restart: on-failure` on `replay-ui` is the safety net if it doesn't.
+1. **`_drop_db()`** — deletes `tradesv3_replay.sqlite` (+ WAL files) when `fresh=True`
+2. **Data validation** — validates all pairs, auto-downloads if data is missing or starts too late
+3. **Standard TF preload** — downloads all standard timeframes proactively (strategies may call `dp.get_pair_dataframe()` for any TF without declaring it in `informative_pairs()`)
+4. **`VirtualClock.start()`** — freeze time at `data_start` (= `start_dt - startup_candle_count × tf_secs`)
+5. **`ReplayExchange` construction**
+6. **Patch `ExchangeResolver.load_exchange`** → returns our exchange
+7. **Patch `Worker._sleep`** → advances virtual clock instead of blocking
+8. **Patch `Wallets.record_wallet_state`** → upsert semantics (avoids UNIQUE constraint collision when multiple records share the same day-floor timestamp)
+9. **`FreqtradeBot(config)`** initialisation
+10. **`_load_informative_pairs()`** — detects and loads informative pairs declared by the strategy
+11. **Main loop** — steps at `sub_step` seconds (default 60s = 1m), calls `bot.process()` at each step
+12. **Summary + HTML report** (optional)
+13. **Restore all patches** in `finally` block
 
 ---
 
@@ -144,7 +135,6 @@ The file is written before `replay-ui` finishes initialising (~2-3s for exchange
 | `Worker._sleep` | `runner.py` | Advance virtual clock instead of sleeping; without this the loop runs at real-time speed |
 | `Wallets.record_wallet_state` | `runner.py` | Avoid SQLite UNIQUE constraint on `(timestamp, currency)` when the day-floor timestamp repeats across candles |
 | `VirtualClock` (freezegun) | `clock.py` | Freeze all time sources globally so `datetime.now()`, `time.time()`, etc. return simulation time |
-| `PairLocks` cleanup | `runner.py` | Remove locks inserted by `replay-ui` running at wall-clock time before each `bot.process()` |
 
 All patches are restored in a `try/finally` block in `run_replay()`.
 
@@ -175,7 +165,7 @@ Funding fees were previously a known divergence but are now fully implemented us
 | Flag | Default | Description |
 |---|---|---|
 | `--timerange` | required | `YYYYMMDD-YYYYMMDD` |
-| `--strategy` | `MyStrategy` | Strategy class name — also written to `config_replay_viewer.json` |
+| `--strategy` | `MyStrategy` | Strategy class name |
 | `--pairs` | config whitelist | Override trading pairs |
 | `--config` | `user_data/config.json` | Path to freqtrade config |
 | `--sub-step` | `1m` | Intra-candle resolution: `1m`, `5m`, `15m` |
@@ -187,14 +177,20 @@ Funding fees were previously a known divergence but are now fully implemented us
 
 ---
 
-## FreqUI access during replay
+## Viewing results in FreqUI
 
-- URL: `http://localhost:8082`
-- Login: `username` / `password` from `api_server` section of `config.json`
-- Trades appear in real time as the replay progresses
-- Charts on closed trades work because `initial_state: running` lets the DataProvider fetch candle data from the exchange
-- The `replay-ui` bot is isolated to `tradesv3_replay.sqlite` and cannot affect the live bot
-- After viewing, stop with: `docker stop freqtrade_replay_ui`
+The replay does not run its own FreqUI. After a run finishes, point a normal
+freqtrade dry-run at the replay DB to browse trades and charts:
+
+```
+freqtrade trade --config user_data/config.json \
+  --db-url sqlite:////freqtrade/user_data/tradesv3_replay.sqlite --dry-run
+```
+
+- Login: `username` / `password` from the `api_server` section of `config.json`
+- The viewer runs at real wall-clock time but only reads the finished replay DB,
+  so it never interferes with the replay
+- Charts for the historical trades load from the local feather data
 
 ---
 
@@ -202,12 +198,10 @@ Funding fees were previously a known divergence but are now fully implemented us
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `No strategy set` on replay-ui startup | `config_replay_viewer.json` not yet written | Normal — `restart: on-failure` retries after runner writes the config |
 | `Pair X unavailable after download` | Pair delisted or renamed | Remove from config whitelist |
 | `need N warmup candles before ...` | Data file starts too late | Delete the feather file; auto-download will fetch from 90 days before start |
-| `database is locked` | Two processes writing same SQLite | Check db_url — replay and live bot must use different files |
-| Charts blank in FreqUI | Old `initial_state: stopped` in `config_replay_viewer.json` | File is auto-generated on next replay run; or edit manually to `running` |
-| Pair locked by replay-ui | `_clear_external_pair_locks` not running | Check runner.py — should call it before every `bot.process()` |
+| `database is locked` | Two processes writing same SQLite | Check db_url — replay and viewer/live bot must use different files |
+| `funding fees will be 0.0 for this pair` warning | No `funding_rate`/`mark` feather data for the pair | Re-run `download-data --trading-mode futures` to fetch funding + mark candles |
 
 ---
 
@@ -216,6 +210,6 @@ Funding fees were previously a known divergence but are now fully implemented us
 - The replay image is published to `ghcr.io/saamy4r/freqtrade-replay:latest` via GitHub Actions on push to `main`
 - `freezegun` and `plotly` are the only extra dependencies beyond the base freqtrade image
 - `debug_validate.py` contains a `ReplayDebugStrategy` for validating harness behaviour
-- Do not add `api_server` to the config passed to `FreqtradeBot` in `runner.py` — it is explicitly popped to avoid spawning an API server inside the replay container (which shares a port with `replay-ui`)
+- Do not add `api_server` to the config passed to `FreqtradeBot` in `runner.py` — it is explicitly popped to avoid spawning an API server inside the replay container
 - Do not add `telegram` to that config either — same reason
 - The `Wallets.record_wallet_state` patch uses SQLite `INSERT OR REPLACE` (upsert) semantics because freqtrade floors wallet timestamps to the day, causing UNIQUE collisions when the replay processes multiple candles in the same calendar day
