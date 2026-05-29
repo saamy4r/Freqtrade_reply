@@ -241,6 +241,29 @@ class _StickyProgress:
             self._draw()
 
 
+def _clear_external_pair_locks(end_dt: datetime) -> None:
+    """Delete pair locks whose lock_time is beyond the simulation window.
+
+    replay-ui runs at real wall-clock time (e.g. 2026) while the simulation
+    covers a past period (e.g. 2024-2025).  Any lock with lock_time > end_dt
+    was created by an external process and must not be allowed to block the
+    replay from entering trades.
+    """
+    try:
+        from freqtrade.persistence import PairLock
+        from sqlalchemy import delete as _sa_delete
+        stmt = _sa_delete(PairLock).where(PairLock.lock_time > end_dt)
+        PairLock.session.execute(stmt)
+        PairLock.session.commit()
+    except Exception as exc:
+        try:
+            from freqtrade.persistence import PairLock as _PL
+            _PL.session.rollback()
+        except Exception:
+            pass
+        logger.debug("Could not clear external pair locks: %s", exc)
+
+
 def _update_viewer_config(config_path: str, strategy: str) -> None:
     """Create or update config_replay_viewer.json so replay-ui loads the correct strategy."""
     viewer_cfg = Path(config_path).parent / "config_replay_viewer.json"
@@ -519,6 +542,7 @@ def run_replay(
         with _StickyProgress() as progress:
             while current < end_dt:
                 clock.advance_to(current)
+                _clear_external_pair_locks(end_dt)
                 try:
                     bot.process()
                 except Exception as exc:
