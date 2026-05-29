@@ -248,7 +248,7 @@ def _update_viewer_config(config_path: str, strategy: str) -> None:
         import json
         cfg = json.loads(viewer_cfg.read_text()) if viewer_cfg.exists() else {}
         cfg.setdefault("db_url", "sqlite:////freqtrade/user_data/tradesv3_replay.sqlite")
-        cfg.setdefault("initial_state", "stopped")
+        cfg.setdefault("initial_state", "running")
         cfg.setdefault("dry_run", True)
         cfg["strategy"] = strategy
         viewer_cfg.write_text(json.dumps(cfg, indent=2) + "\n")

@@ -109,7 +109,7 @@ Missing data is downloaded automatically before the run starts. When finished, a
 
 FreqUI starts automatically on **http://localhost:8082** when you run the replay — no extra setup required. Log in with the `username` and `password` from your `config.json`'s `api_server` section.
 
-Trades appear in real time as the replay progresses. The bot is in `stopped` state so it displays results without interfering with the replay or placing any trades.
+Trades appear in real time as the replay progresses. The replay-ui runs in `dry_run` mode against the isolated `tradesv3_replay.sqlite` database, so your live bot is never affected. Stop it when you are done viewing to prevent the replay-ui from accumulating its own dry-run trades in the replay database.
 
 After the replay finishes, `replay-ui` keeps running so you can continue browsing results. Stop it when done:
 
