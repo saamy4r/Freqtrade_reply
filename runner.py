@@ -21,7 +21,7 @@ from freqtrade.enums import RunMode, State
 from freqtrade.exchange import timeframe_to_seconds
 from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.persistence import Trade, init_db
-from freqtrade.resolvers import ExchangeResolver
+from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.wallets import Wallets
 from freqtrade.worker import Worker
 
@@ -275,6 +275,13 @@ def run_replay(
     # Disable all notification channels (remove rather than disable to skip schema validation)
     config.pop("telegram", None)
     config.pop("api_server", None)
+
+    # Resolve the strategy now so its `timeframe` and `startup_candle_count`
+    # populate the config.  freqtrade precedence: an explicit config value wins,
+    # otherwise the strategy's class attribute is used.  Without this, a config
+    # that omits "timeframe" would silently fall back to 1h instead of the
+    # strategy's own timeframe, mis-sizing the warmup window and data validation.
+    StrategyResolver.load_strategy(config)
 
     tf: str = config.get("timeframe", "1h")
     tf_secs: int = timeframe_to_seconds(tf)
