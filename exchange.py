@@ -143,17 +143,20 @@ class ReplayExchange(Exchange):
         pattern used by e.g. ECRV2.  Without it, those calls return an empty
         DataFrame because the DataProvider never requested that TF via
         refresh_latest_ohlcv, so _klines never got populated for it.
+
+        IMPORTANT: the fallback does NOT write to _klines.  Only
+        refresh_latest_ohlcv() owns the cache.  Writing here would let ad-hoc
+        DP lookups from leverage()/confirm_trade_entry() freeze a stale slice
+        into the cache; the next 4-h candle boundary would then serve
+        _compute_levels() with an entry from 4+ hours in the past, producing a
+        ghost stoploss order at a price far from the actual compression zone.
         """
         if pair_interval in self._klines:
             df = self._klines[pair_interval]
             return df.copy() if copy else df
-        pair, tf, c_type = pair_interval
+        pair, tf, _ = pair_interval
+        # Fresh fetch — not cached, so the main cache stays clean.
         df = self._replay_store.get_candles(pair, tf, up_to=self._replay_clock.now())
-        if not df.empty:
-            from freqtrade.enums import CandleType
-            self._klines[pair_interval] = df
-            if c_type != CandleType.SPOT:
-                self._klines[(pair, tf, CandleType.SPOT)] = df
         return df.copy() if copy else df
 
     def refresh_latest_ohlcv(
