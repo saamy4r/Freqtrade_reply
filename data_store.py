@@ -21,7 +21,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h"]
+TIMEFRAMES = ["1m", "5m", "15m", "30", "1h", "2h", "4h"]
 
 
 def _normalise_dt(series: "pd.Series") -> "pd.Series":
@@ -32,7 +32,9 @@ def _normalise_dt(series: "pd.Series") -> "pd.Series":
 
 
 class ReplayDataStore:
-    def __init__(self, data_dir: str | Path, pairs: list[str], trading_mode: str = "futures") -> None:
+    def __init__(
+        self, data_dir: str | Path, pairs: list[str], trading_mode: str = "futures"
+    ) -> None:
         self._data_dir = Path(data_dir)
         self._pairs = list(pairs)
         self._trading_mode = trading_mode
@@ -72,8 +74,11 @@ class ReplayDataStore:
             self._candles[pair][tf] = df
             logger.info(
                 "Loaded %s %s: %d candles  %s → %s",
-                pair, tf, len(df),
-                df.iloc[0]["date"].isoformat(), df.iloc[-1]["date"].isoformat(),
+                pair,
+                tf,
+                len(df),
+                df.iloc[0]["date"].isoformat(),
+                df.iloc[-1]["date"].isoformat(),
             )
 
         # Funding rate — try 8h (Binance default) then 1h
@@ -81,7 +86,11 @@ class ReplayDataStore:
             path = self._data_dir / f"{base}-{tf}-funding_rate.feather"
             if not path.exists():
                 continue
-            df = pd.read_feather(path)[["date", "open"]].sort_values("date").reset_index(drop=True)
+            df = (
+                pd.read_feather(path)[["date", "open"]]
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
             df["date"] = _normalise_dt(df["date"])
             self._funding_rates[pair] = df
             logger.info("Loaded %s funding_rate (%s): %d rows", pair, tf, len(df))
@@ -92,7 +101,11 @@ class ReplayDataStore:
             path = self._data_dir / f"{base}-{tf}-mark.feather"
             if not path.exists():
                 continue
-            df = pd.read_feather(path)[["date", "open"]].sort_values("date").reset_index(drop=True)
+            df = (
+                pd.read_feather(path)[["date", "open"]]
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
             df["date"] = _normalise_dt(df["date"])
             self._mark_prices[pair] = df
             logger.info("Loaded %s mark price (%s): %d rows", pair, tf, len(df))
@@ -110,7 +123,9 @@ class ReplayDataStore:
                 logger.warning(
                     "%s: no %s data found in %s — funding fees will be 0.0 for this pair "
                     "(re-run download-data with --trading-mode futures to fetch it)",
-                    pair, " and ".join(missing), self._data_dir,
+                    pair,
+                    " and ".join(missing),
+                    self._data_dir,
                 )
 
     def load_extra_pair(self, pair: str) -> bool:
@@ -144,7 +159,9 @@ class ReplayDataStore:
         """
         df = self._candles.get(pair, {}).get(tf)
         if df is None or df.empty:
-            return pd.DataFrame(columns=["date", "open", "high", "low", "close", "volume"])
+            return pd.DataFrame(
+                columns=["date", "open", "high", "low", "close", "volume"]
+            )
         up_to_ts = pd.Timestamp(up_to)
         # Binary search — O(log n) instead of O(n) boolean mask
         idx = int(df["date"].searchsorted(up_to_ts, side="left"))
@@ -247,7 +264,9 @@ class ReplayDataStore:
     ) -> None:
         df = self._candles.get(pair, {}).get(tf)
         if df is None:
-            raise ValueError(f"No {tf} data for {pair}. Check {self._filename(pair, tf)}")
+            raise ValueError(
+                f"No {tf} data for {pair}. Check {self._filename(pair, tf)}"
+            )
 
         start_ts = pd.Timestamp(start_dt)
         end_ts = pd.Timestamp(end_dt)
@@ -265,5 +284,8 @@ class ReplayDataStore:
 
         logger.info(
             "Validated %s %s: %d warmup + %d replay candles",
-            pair, tf, len(warmup), len(replay_range),
+            pair,
+            tf,
+            len(warmup),
+            len(replay_range),
         )
