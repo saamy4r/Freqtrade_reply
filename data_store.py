@@ -21,7 +21,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAMES = ["1m", "5m", "15m", "30m", 1h", "2h", "4h"]
+TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h"]
 
 
 def _normalise_dt(series: "pd.Series") -> "pd.Series":
