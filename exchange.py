@@ -19,6 +19,7 @@ virtual wallet — is inherited unchanged from Exchange.
 """
 
 import logging
+import math
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -28,6 +29,37 @@ from .clock import VirtualClock
 from .data_store import ReplayDataStore
 
 logger = logging.getLogger(__name__)
+
+
+def _infer_price_tick(store: ReplayDataStore, pair: str) -> float:
+    """
+    Derive a per-pair price tick size from the pair's actual price scale.
+
+    _make_market() used to hardcode 2 decimal places for every pair. That's
+    fine for a $1787 ETH but catastrophic for a $0.08 DOGE or $0.02
+    AIGENSYN: rounding to 2 decimals collapses the entire price move (and
+    any ATR-based stop distance, which is a few thousandths of a cent for
+    these pairs) down to nothing, making the stop price identical to the
+    entry price and triggering an instant, ~fee-sized "stop-loss" the
+    moment the position opens.
+
+    Using a tick size scaled to ~5 significant digits (TICK_SIZE precision
+    mode) keeps resolution proportional to price, the same way real
+    exchange tick sizes work, instead of a fixed decimal-place count.
+    """
+    price = None
+    for tf in ("1h", "5m", "1m", "4h", "15m", "30m", "2h"):
+        df = store._candles.get(pair, {}).get(tf)
+        if df is not None and not df.empty:
+            price = float(df["close"].iloc[-1])
+            break
+
+    if not price or price <= 0 or math.isnan(price):
+        return 0.01  # fallback: old behaviour
+
+    decimals = 5 - math.floor(math.log10(price))
+    decimals = int(min(max(decimals, 0), 8))
+    return 10 ** (-decimals)
 
 _SUPPORTED_CAPABILITIES = {
     "fetchL2OrderBook",
@@ -59,11 +91,17 @@ class ReplayExchange(Exchange):
         self._slippage_pct = slippage_pct
         super().__init__(config, validate=False)
         # Pre-populate markets so get_markets() / verify_whitelist() works
-        self._markets = {pair: self._make_market(pair) for pair in store._pairs}
+        self._markets = {pair: self._make_market(pair, store) for pair in store._pairs}
 
     @staticmethod
-    def _make_market(pair: str) -> dict:
-        """Minimal market dict satisfying Freqtrade's market structure."""
+    def _make_market(pair: str, store: ReplayDataStore) -> dict:
+        """Minimal market dict satisfying Freqtrade's market structure.
+
+        Price precision is expressed as a per-pair TICK_SIZE (see
+        _infer_price_tick) rather than a fixed decimal-place count, so
+        low-priced pairs (DOGE, AIGENSYN, ...) don't have their price
+        resolution — and any ATR-based stop distance — rounded away.
+        """
         base, quote = pair.split("/")[0], pair.split("/")[1].split(":")[0]
         return {
             "id": pair.replace("/", "").replace(":", ""),
@@ -80,7 +118,7 @@ class ReplayExchange(Exchange):
             "contractSize": 1.0,
             "taker": 0.0002,
             "maker": 0.0002,
-            "precision": {"amount": 8, "price": 2},
+            "precision": {"amount": 1e-8, "price": _infer_price_tick(store, pair)},
             "limits": {
                 "amount": {"min": 0.00001, "max": None},
                 "cost": {"min": 1.0, "max": None},
@@ -102,11 +140,11 @@ class ReplayExchange(Exchange):
         mock.name = exchange_conf.get("name", "binance")
         mock.id = exchange_conf.get("name", "binance").lower()
         mock.timeframes = {tf: tf for tf in ["1m", "5m", "15m", "1h", "4h"]}
-        mock.precisionMode = 2  # DECIMAL_PLACES — read directly by Exchange.__init__
+        mock.precisionMode = 4  # TICK_SIZE — read directly by Exchange.__init__
         mock.describe.return_value = {
             "has": {cap: True for cap in _SUPPORTED_CAPABILITIES},
             "timeframes": mock.timeframes,
-            "precisionMode": 2,
+            "precisionMode": 4,
         }
         return mock
 
