@@ -89,6 +89,9 @@ class ReplayExchange(Exchange):
         self._replay_store = store
         self._replay_clock = clock
         self._slippage_pct = slippage_pct
+        # Set on the first refresh_latest_ohlcv call — anchors live-cache
+        # window-growth emulation (see _live_window_rows).
+        self._replay_first_refresh = None
         super().__init__(config, validate=False)
         # Pre-populate markets so get_markets() / verify_whitelist() works
         self._markets = {pair: self._make_market(pair, store) for pair in store._pairs}
@@ -116,7 +119,7 @@ class ReplayExchange(Exchange):
             "type": "swap",
             "contract": True,
             "contractSize": 1.0,
-            "taker": 0.0002,
+            "taker": 0.0005,
             "maker": 0.0002,
             "precision": {"amount": 1e-8, "price": _infer_price_tick(store, pair)},
             "limits": {
@@ -194,8 +197,34 @@ class ReplayExchange(Exchange):
             return df.copy() if copy else df
         pair, tf, _ = pair_interval
         # Fresh fetch — not cached, so the main cache stays clean.
-        df = self._replay_store.get_candles(pair, tf, up_to=self._replay_clock.now())
+        df = self._replay_store.get_candles(
+            pair, tf, up_to=self._replay_clock.now(), max_rows=self._live_window_rows(tf)
+        )
         return df.copy() if copy else df
+
+    def _live_window_rows(self, tf: str) -> int:
+        """
+        Row count a live bot's klines cache would hold right now.
+
+        Live behaviour (Exchange._process_ohlcv_df): the first fetch returns
+        ohlcv_candle_limit rows (499 on Binance), then the cache grows by one
+        row per newly closed candle and is aged out at
+        ohlcv_candle_limit + startup_candle_count.
+
+        Serving a different window length than live is not cosmetic: swing/BOS
+        state machines recompute from the first served row, so the window length
+        changes indicator state at the latest candle and can flip marginal
+        entry signals.
+        """
+        from freqtrade.exchange import timeframe_to_seconds
+
+        limit = 499  # Binance ohlcv_candle_limit
+        startup = int(self._config.get("startup_candle_count", 0) or 0)
+        if self._replay_first_refresh is None:
+            return limit
+        elapsed = (self._replay_clock.now() - self._replay_first_refresh).total_seconds()
+        grown = int(elapsed // timeframe_to_seconds(tf))
+        return min(limit + grown, limit + startup)
 
     def refresh_latest_ohlcv(
         self,
@@ -207,10 +236,14 @@ class ReplayExchange(Exchange):
     ) -> dict:
         from freqtrade.enums import CandleType
         now = self._replay_clock.now()
+        if self._replay_first_refresh is None:
+            self._replay_first_refresh = now
         results: dict = {}
         for item in pair_list:
             pair, tf, c_type = item
-            df = self._replay_store.get_candles(pair, tf, up_to=now)
+            df = self._replay_store.get_candles(
+                pair, tf, up_to=now, max_rows=self._live_window_rows(tf)
+            )
             if cache and not df.empty:
                 self._klines[(pair, tf, c_type)] = df
                 # Strategies calling get_pair_dataframe() without candle_type resolve
@@ -226,15 +259,39 @@ class ReplayExchange(Exchange):
     # Price feeds — drive entry/exit pricing and dry-run order fills
     # ------------------------------------------------------------------
 
+    def _pair_tick(self, pair: str) -> float:
+        market = self._markets.get(pair) or {}
+        return market.get("precision", {}).get("price") or 0.01
+
+    def _synthetic_bid_ask(self, pair: str, price: float) -> tuple[float, float]:
+        """
+        bid/ask = price ∓ half-spread, aligned to the pair's tick size
+        (bid rounded down, ask rounded up — the way a real book quotes).
+
+        Alignment matters for dry-run limit fills: freqtrade prices orders off
+        this book and then rounds the order price to the tick.  With a raw
+        (unaligned) ask, a buy limit placed "at the ask" rounds to a price a
+        fraction of a tick below it and never crosses the very book it was
+        quoted from — entries then hang unfilled until the price dips, which
+        systematically misses or delays fills in fast markets (real dry-runs
+        fill these within seconds).
+        """
+        half_spread = price * self._slippage_pct / 2
+        tick = self._pair_tick(pair)
+        decimals = max(0, int(round(-math.log10(tick))) + 1)
+        ask = round(math.ceil((price + half_spread) / tick - 1e-9) * tick, decimals)
+        bid = round(math.floor((price - half_spread) / tick + 1e-9) * tick, decimals)
+        return bid, ask
+
     def fetch_ticker(self, pair: str) -> dict:
         price = self._replay_store.get_last_price(pair, self._replay_clock.now())
-        half_spread = price * self._slippage_pct / 2
+        bid, ask = self._synthetic_bid_ask(pair, price)
         ts = int(self._replay_clock.now().timestamp() * 1000)
         return {
             "symbol": pair,
             "last": price,
-            "bid": price - half_spread,
-            "ask": price + half_spread,
+            "bid": bid,
+            "ask": ask,
             "high": price,
             "low": price,
             "open": price,
@@ -253,11 +310,11 @@ class ReplayExchange(Exchange):
         bid = last_close - spread/2  →  sell limit fills when limit_price <= bid
         """
         price = self._replay_store.get_last_price(pair, self._replay_clock.now())
-        half_spread = price * self._slippage_pct / 2
+        bid, ask = self._synthetic_bid_ask(pair, price)
         ts = int(self._replay_clock.now().timestamp() * 1000)
         return {
-            "asks": [[price + half_spread, 999_999.0]],
-            "bids": [[price - half_spread, 999_999.0]],
+            "asks": [[ask, 999_999.0]],
+            "bids": [[bid, 999_999.0]],
             "timestamp": ts,
             "datetime": self._replay_clock.now().isoformat(),
             "nonce": ts,
@@ -301,14 +358,17 @@ class ReplayExchange(Exchange):
             )
 
         low, high = candle["low"], candle["high"]
-        half_spread = low * self._slippage_pct / 2
-
+        tick = self._pair_tick(pair)
+        decimals = max(0, int(round(-math.log10(tick))) + 1)
         # Intra-candle book:
         #   ask = candle low  — market fell this low  → fills buy limits & sell stops
         #   bid = candle high — market rose this high → fills sell limits & buy stops
+        # Tick-aligned exact-touch semantics (like freqtrade backtesting): a limit
+        # order fills iff the candle range touched its (tick-aligned) price.  The
+        # ask rounds up / bid rounds down so "touched exactly" still crosses.
         candle_book: dict = {
-            "asks": [[low + half_spread, 999_999.0]],
-            "bids": [[high - half_spread, 999_999.0]],
+            "asks": [[round(math.ceil(low / tick - 1e-9) * tick, decimals), 999_999.0]],
+            "bids": [[round(math.floor(high / tick + 1e-9) * tick, decimals), 999_999.0]],
             "timestamp": int(self._replay_clock.now().timestamp() * 1000),
             "datetime": self._replay_clock.now().isoformat(),
             "nonce": 0,
@@ -355,7 +415,13 @@ class ReplayExchange(Exchange):
         price: float = 1,
         taker_or_maker: str = "maker",
     ) -> float:
-        return 0.0002  # Binance futures taker/maker fee
+        # Binance USDT-M futures: taker 0.05%, maker 0.02%.  Freqtrade's dry-run
+        # passes "taker" for market orders and immediately-crossed limit orders,
+        # "maker" for limit orders that fill on a later check — matching the fee
+        # split observed in real dry-run databases.
+        if order_type == "market" or taker_or_maker == "taker":
+            return 0.0005
+        return 0.0002
 
     def get_funding_fees(
         self, pair: str, amount: float, is_short: bool, open_date: datetime
