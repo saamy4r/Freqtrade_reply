@@ -2,9 +2,14 @@
 ReplayDataStore — loads OHLCV feather files and serves time-gated slices.
 
 Rules:
-- get_candles() returns all CLOSED candles whose open_time < up_to.
-  The currently-open candle (open_time == up_to) is excluded, exactly
-  mirroring live bot behaviour (drop_incomplete=True).
+- get_candles() returns all CLOSED candles: open_time + tf_duration <= up_to.
+  Gating must use the candle's CLOSE time, not its open time.  Gating on
+  open_time < up_to only works when up_to lands exactly on a boundary of
+  that timeframe; at any sub-step in between (the runner advances in 1m
+  steps) it serves the currently-forming candle with its final OHLC — a
+  look-ahead of up to the full candle duration that lets the strategy
+  trade on the future.  Close-time gating mirrors live bot behaviour
+  (drop_incomplete=True) at every instant, not just at boundaries.
 - get_last_price() uses the finest available timeframe (1m > 5m > 15m > 1h > 4h)
   so that order-fill price is as accurate as possible within each candle.
 - calculate_funding_fees() uses local funding_rate and mark feather files.
@@ -22,6 +27,13 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h"]
+
+_TF_UNIT_SECS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _tf_secs(tf: str) -> int:
+    """'5m' -> 300, '2h' -> 7200.  Local equivalent of timeframe_to_seconds."""
+    return int(tf[:-1]) * _TF_UNIT_SECS[tf[-1]]
 
 
 def _normalise_dt(series: "pd.Series") -> "pd.Series":
@@ -146,49 +158,64 @@ class ReplayDataStore:
     # Public API
     # ------------------------------------------------------------------
 
-    # Maximum rows returned to the strategy per call — limits indicator recomputation cost.
-    # 500 > startup_candle_count (250), so warmup is always sufficient.
-    MAX_CANDLES = 500
+    # Default cap on rows returned per call — limits indicator recomputation cost.
+    # The exchange passes an explicit max_rows emulating the live klines cache
+    # (499-row initial Binance fetch growing to 499 + startup_candle_count);
+    # this default is the fallback ceiling for direct store users.
+    MAX_CANDLES = 1000
 
-    def get_candles(self, pair: str, tf: str, up_to: datetime) -> pd.DataFrame:
+    def get_candles(
+        self, pair: str, tf: str, up_to: datetime, max_rows: int | None = None
+    ) -> pd.DataFrame:
         """
-        All closed candles with open_time < up_to, capped at MAX_CANDLES most recent.
+        All CLOSED candles (open_time + tf <= up_to), capped at the most recent
+        `max_rows` (default MAX_CANDLES).
 
-        Capping mirrors live-bot behaviour (Freqtrade downloads ~500 candles, not all history)
-        and avoids recomputing indicators over 14k+ rows on every process() call.
+        The cutoff is on the candle's close time: a candle opened at 22:00 on a
+        2h timeframe is only served from 00:00 onwards.  Gating on open_time
+        alone would leak the forming candle's final OHLC at every intra-candle
+        sub-step (look-ahead).
+
+        Capping matters beyond performance: swing/BOS/CHoCH-style indicators are
+        path-dependent from the first row, so the served window length must
+        match what a live bot's klines cache would hold or marginal signals
+        flip (see ReplayExchange._live_window_rows).
         """
         df = self._candles.get(pair, {}).get(tf)
         if df is None or df.empty:
             return pd.DataFrame(
                 columns=["date", "open", "high", "low", "close", "volume"]
             )
-        up_to_ts = pd.Timestamp(up_to)
-        # Binary search — O(log n) instead of O(n) boolean mask
-        idx = int(df["date"].searchsorted(up_to_ts, side="left"))
-        start = max(0, idx - self.MAX_CANDLES)
+        cutoff = pd.Timestamp(up_to) - pd.Timedelta(seconds=_tf_secs(tf))
+        # Binary search — O(log n) instead of O(n) boolean mask.
+        # side='right' includes the candle whose open == cutoff (closes exactly at up_to).
+        idx = int(df["date"].searchsorted(cutoff, side="right"))
+        start = max(0, idx - (max_rows or self.MAX_CANDLES))
         return df.iloc[start:idx].reset_index(drop=True)
 
     def get_last_price(self, pair: str, up_to: datetime) -> float:
-        """Last known close price strictly before up_to, finest resolution first."""
+        """Close price of the last CLOSED candle before up_to, finest resolution first."""
         up_to_ts = pd.Timestamp(up_to)
         for tf in TIMEFRAMES:
             df = self._candles.get(pair, {}).get(tf)
             if df is None or df.empty:
                 continue
-            # Binary search — O(log n)
-            idx = int(df["date"].searchsorted(up_to_ts, side="left")) - 1
+            # Binary search — O(log n).  Close-time gated: the forming candle's
+            # close is the future and must never be served.
+            cutoff = up_to_ts - pd.Timedelta(seconds=_tf_secs(tf))
+            idx = int(df["date"].searchsorted(cutoff, side="right")) - 1
             if idx >= 0:
                 return float(df.iloc[idx]["close"])
         raise ValueError(f"No price data for {pair} before {up_to}")
 
     def get_candle_ohlc(self, pair: str, tf: str, up_to: datetime) -> dict | None:
-        """OHLC dict for the last completed candle of timeframe `tf` before `up_to`.
+        """OHLC dict for the last CLOSED candle of timeframe `tf` as of `up_to`.
         Used by the exchange for intra-candle stop/limit fill detection."""
         df = self._candles.get(pair, {}).get(tf)
         if df is None or df.empty:
             return None
-        up_to_ts = pd.Timestamp(up_to)
-        idx = int(df["date"].searchsorted(up_to_ts, side="left")) - 1
+        cutoff = pd.Timestamp(up_to) - pd.Timedelta(seconds=_tf_secs(tf))
+        idx = int(df["date"].searchsorted(cutoff, side="right")) - 1
         if idx < 0:
             return None
         row = df.iloc[idx]
