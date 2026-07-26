@@ -82,7 +82,7 @@ Wraps `freeze_time` from freezegun. `start(dt)` freezes all `datetime.now()`, `t
 
 ### `data_store.py` — ReplayDataStore
 
-Loads all timeframes (`1m`, `5m`, `15m`, `1h`, `4h`) from feather files at startup. Serves time-gated slices via binary search (`searchsorted`), always excluding the currently-open candle (`open_time < up_to`), which mirrors live bot behaviour (`drop_incomplete=True`).
+Loads all timeframes (`1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`) from feather files at startup. Serves time-gated slices via binary search (`searchsorted`), always excluding candles that have not yet **closed** (`open_time + tf_duration <= up_to`), which mirrors live bot behaviour (`drop_incomplete=True`) at every 1m sub-step. Gating on open time alone was a look-ahead bug: at any sub-step between candle boundaries it served the currently-forming candle with its final OHLC, letting the strategy see up to a full candle into the future (this single bug produced absurdly profitable replays).
 
 - `get_candles()` — capped at 500 rows (matches live freqtrade download limit, avoids recomputing indicators over 14k+ rows)
 - `get_last_price()` — finest resolution first (1m → 4h)
@@ -97,12 +97,13 @@ Subclasses `freqtrade.exchange.Exchange`. Overrides:
 |---|---|
 | `_init_ccxt` | Returns `MagicMock` — no network connection ever attempted |
 | `reload_markets` | No-op — called every `process()` loop |
-| `refresh_latest_ohlcv` | Serves from `ReplayDataStore` gated by `VirtualClock` |
+| `refresh_latest_ohlcv` | Serves from `ReplayDataStore` gated by `VirtualClock`, window-sized like the live klines cache (499-row initial Binance fetch growing by 1/candle to 499 + `startup_candle_count`) — window length changes path-dependent indicator state (BOS/CHoCH), so it must match live |
 | `klines` | Cache lookup with fallback to store (handles undeclared informative TFs) |
-| `fetch_ticker` | Synthesises bid/ask from last close ± `slippage_pct / 2` |
-| `fetch_l2_order_book` | Synthetic order book for `_dry_is_price_crossed()` |
-| `check_dry_limit_order_filled` | Uses candle high/low for deferred orders (stop accuracy) |
-| `get_funding_fees` | Returns 0.0 — known divergence |
+| `fetch_ticker` | Synthesises bid/ask from last close ± `slippage_pct / 2`, tick-aligned (bid down, ask up) |
+| `fetch_l2_order_book` | Synthetic order book for `_dry_is_price_crossed()`, tick-aligned |
+| `check_dry_limit_order_filled` | Uses candle high/low for deferred orders (stop accuracy), exact-touch tick-aligned semantics |
+| `get_fee` | Maker 0.02% / taker 0.05% (Binance USDT-M futures); freqtrade dry-run passes taker for market + immediately-crossed limit orders |
+| `get_funding_fees` | Computed from local `funding_rate` + `mark` feather files |
 | `set_leverage`, `set_margin_mode` | No-ops |
 
 **Intra-candle fill logic**: For deferred orders (existing open orders being re-checked), the exchange uses the last completed candle's `high`/`low` to determine if a stoploss or limit order crossed, not the synthetic close±spread book. This matches live bot accuracy and is why `--sub-step 1m` gives the most accurate results.
@@ -145,6 +146,9 @@ All patches are restored in a `try/finally` block in `run_replay()`.
 1. **Slippage model** — simplified half-spread applied uniformly. Real slippage is order-size dependent and varies by liquidity.
 2. **Order book depth** — synthetic; always has infinite liquidity at bid/ask. Market impact is not modelled.
 3. **Intra-candle price path** — only high/low bounds are known; the actual price path within a candle is not simulated (a wick could touch the stoploss and recover, and the exact fill timing within the candle is unknown).
+4. **Decision granularity** — the live bot re-evaluates stops/exits every `process_throttle_secs` (~5–10 s) at real-time prices; the replay decides once per sub-step (60 s at `--sub-step 1m`) at 1m-candle prices, so stop/target exits can fire up to a minute later than live.
+5. **Entry limit fills** — the replay fills a limit placed at the synthetic ask immediately (taker fee); a real dry-run usually rests a few seconds and fills as maker (0.02% vs 0.05% — replay is slightly pessimistic on entry fees).
+6. **Amount precision** — real Binance amount steps (e.g. whole contracts for BEAT, 0.01 for BNB) are not modelled; the replay uses 1e-8, so position amounts/stakes can differ from live by up to one amount-step (<1%).
 
 Funding fees were previously a known divergence but are now fully implemented using the local `funding_rate` and `mark` feather files downloaded alongside OHLCV data.
 
@@ -164,7 +168,7 @@ Funding fees were previously a known divergence but are now fully implemented us
 
 | Flag | Default | Description |
 |---|---|---|
-| `--timerange` | required | `YYYYMMDD-YYYYMMDD` |
+| `--timerange` | required | `YYYYMMDD-YYYYMMDD` or `YYYYMMDDHHMM-YYYYMMDDHHMM` |
 | `--strategy` | `MyStrategy` | Strategy class name |
 | `--pairs` | config whitelist | Override trading pairs |
 | `--config` | `user_data/config.json` | Path to freqtrade config |
