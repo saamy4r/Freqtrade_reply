@@ -49,7 +49,10 @@ DEFAULT_CONFIG = "/freqtrade/user_data/config.json"
 
 
 def _parse_dt(s: str) -> datetime:
-    return datetime.strptime(s, "%Y%m%d").replace(tzinfo=timezone.utc)
+    fmt = {8: "%Y%m%d", 12: "%Y%m%d%H%M"}.get(len(s))
+    if fmt is None:
+        raise ValueError(f"Invalid date: {s}")
+    return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
 
 
 def _pairs_from_config(config_path: str) -> list[str]:
@@ -76,7 +79,8 @@ def main() -> None:
     )
     p.add_argument(
         "--timerange", required=True,
-        help="Date range as YYYYMMDD-YYYYMMDD, e.g. 20241101-20241115",
+        help="Date range as YYYYMMDD-YYYYMMDD (optionally with HHMM: "
+             "YYYYMMDDHHMM-YYYYMMDDHHMM), e.g. 20241101-20241115",
     )
     p.add_argument(
         "--strategy", default="MyStrategy",
@@ -121,7 +125,7 @@ def main() -> None:
         start_dt = _parse_dt(start_str)
         end_dt = _parse_dt(end_str)
     except ValueError:
-        p.error("--timerange must be YYYYMMDD-YYYYMMDD")
+        p.error("--timerange must be YYYYMMDD-YYYYMMDD or YYYYMMDDHHMM-YYYYMMDDHHMM")
 
     if start_dt >= end_dt:
         p.error("Start date must be before end date")
