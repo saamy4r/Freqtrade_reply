@@ -98,8 +98,13 @@ class ReplayDataStore:
             path = self._data_dir / f"{base}-{tf}-funding_rate.feather"
             if not path.exists():
                 continue
+            raw = pd.read_feather(path)
+            # freqtrade stores the rate in a "funding_rate" column; older
+            # versions wrote OHLCV-shaped files with the rate in "open".
+            rate_col = "funding_rate" if "funding_rate" in raw.columns else "open"
             df = (
-                pd.read_feather(path)[["date", "open"]]
+                raw[["date", rate_col]]
+                .rename(columns={rate_col: "open"})
                 .sort_values("date")
                 .reset_index(drop=True)
             )
