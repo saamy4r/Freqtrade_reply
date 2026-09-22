@@ -45,6 +45,19 @@ def _drop_db(db_url: str) -> None:
             logger.info("Removed existing DB file: %s", p)
 
 
+def _normalise_pairs(pairs: list[str]) -> list[str]:
+    """Upper-case pair symbols to the exchange's canonical spelling.
+
+    Worth doing explicitly because the failure mode is confusing: `freqtrade
+    download-data` normalises whatever it is given through ccxt and writes
+    SOL_USDT_USDT-1h-futures.feather, while every lookup here derives the
+    filename from the string as the user typed it.  So `--pairs sol/usdt:usdt`
+    downloads successfully, fails to find its own download, re-downloads, and
+    reports the pair as delisted.
+    """
+    return [pair.strip().upper() for pair in pairs]
+
+
 def _download_data(
     config_path: str,
     pairs: list[str],
@@ -254,6 +267,8 @@ def run_replay(
     report_path: str | None = None,
     sub_step: int = 60,
 ) -> None:
+    pairs = _normalise_pairs(pairs)
+
     if fresh:
         _drop_db(db_url)
 
