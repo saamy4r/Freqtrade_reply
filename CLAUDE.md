@@ -82,9 +82,10 @@ Wraps `freeze_time` from freezegun. `start(dt)` freezes all `datetime.now()`, `t
 
 ### `data_store.py` — ReplayDataStore
 
-Loads all timeframes (`1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`) from feather files at startup. Serves time-gated slices via binary search (`searchsorted`), always excluding candles that have not yet **closed** (`open_time + tf_duration <= up_to`), which mirrors live bot behaviour (`drop_incomplete=True`) at every 1m sub-step. Gating on open time alone was a look-ahead bug: at any sub-step between candle boundaries it served the currently-forming candle with its final OHLC, letting the strategy see up to a full candle into the future (this single bug produced absurdly profitable replays).
+Loads all timeframes (`1m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `1d`) from feather files at startup. Serves time-gated slices via binary search (`searchsorted`), always excluding candles that have not yet **closed** (`open_time + tf_duration <= up_to`), which mirrors live bot behaviour (`drop_incomplete=True`) at every 1m sub-step. Gating on open time alone was a look-ahead bug: at any sub-step between candle boundaries it served the currently-forming candle with its final OHLC, letting the strategy see up to a full candle into the future (this single bug produced absurdly profitable replays).
 
 - `get_candles()` — capped at 500 rows (matches live freqtrade download limit, avoids recomputing indicators over 14k+ rows)
+- `get_funding_candles()` — funding-rate events published at or before `up_to`, in freqtrade's `funding_rate` candle layout (rate in `open`), so strategies can read funding via `dp.get_pair_dataframe(pair, tf, candle_type='funding_rate')`
 - `get_last_price()` — finest resolution first (1m → 4h)
 - `get_candle_ohlc()` — used by the exchange for intra-candle stop/limit fill detection
 - `validate()` — checks warmup candles and replay range coverage before starting
@@ -98,7 +99,7 @@ Subclasses `freqtrade.exchange.Exchange`. Overrides:
 | `_init_ccxt` | Returns `MagicMock` — no network connection ever attempted |
 | `reload_markets` | No-op — called every `process()` loop |
 | `refresh_latest_ohlcv` | Serves from `ReplayDataStore` gated by `VirtualClock`, window-sized like the live klines cache (499-row initial Binance fetch growing by 1/candle to 499 + `startup_candle_count`) — window length changes path-dependent indicator state (BOS/CHoCH), so it must match live |
-| `klines` | Cache lookup with fallback to store (handles undeclared informative TFs) |
+| `klines` | Cache lookup with fallback to store (handles undeclared informative TFs); `funding_rate` candle type is served from the funding data, not OHLCV |
 | `fetch_ticker` | Synthesises bid/ask from last close ± `slippage_pct / 2`, tick-aligned (bid down, ask up) |
 | `fetch_l2_order_book` | Synthetic order book for `_dry_is_price_crossed()`, tick-aligned |
 | `check_dry_limit_order_filled` | Uses candle high/low for deferred orders (stop accuracy), exact-touch tick-aligned semantics |
@@ -157,7 +158,7 @@ Funding fees were previously a known divergence but are now fully implemented us
 ## Data requirements
 
 - Feather files at `user_data/data/binance/futures/` named `{PAIR}-{TF}-futures.feather`
-- All five timeframes required: `1m`, `5m`, `15m`, `1h`, `4h`
+- All timeframes in `data_store.TIMEFRAMES` are required (`1m` … `4h` and `1d`); missing files are auto-downloaded
 - Data must cover `startup_candle_count` candles before `start_dt` (default 50 × tf_secs worth of warmup)
 - Auto-download fetches 90 days before `start_dt` for warmup coverage
 - If a feather file starts after the required warmup start, it is deleted and re-downloaded

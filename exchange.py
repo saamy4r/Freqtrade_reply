@@ -195,8 +195,11 @@ class ReplayExchange(Exchange):
         if pair_interval in self._klines:
             df = self._klines[pair_interval]
             return df.copy() if copy else df
-        pair, tf, _ = pair_interval
+        pair, tf, c_type = pair_interval
         # Fresh fetch — not cached, so the main cache stays clean.
+        if str(c_type) == "funding_rate":
+            df = self._replay_store.get_funding_candles(pair, up_to=self._replay_clock.now())
+            return df.copy() if copy else df
         df = self._replay_store.get_candles(
             pair, tf, up_to=self._replay_clock.now(), max_rows=self._live_window_rows(tf)
         )
@@ -241,6 +244,13 @@ class ReplayExchange(Exchange):
         results: dict = {}
         for item in pair_list:
             pair, tf, c_type = item
+            if str(c_type) == "funding_rate":
+                # funding events (not OHLCV): served from the store's funding data
+                df = self._replay_store.get_funding_candles(pair, up_to=now)
+                if cache and not df.empty:
+                    self._klines[(pair, tf, c_type)] = df
+                results[(pair, tf, c_type)] = df
+                continue
             df = self._replay_store.get_candles(
                 pair, tf, up_to=now, max_rows=self._live_window_rows(tf)
             )

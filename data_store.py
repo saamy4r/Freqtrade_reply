@@ -26,7 +26,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h"]
+TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"]
 
 _TF_UNIT_SECS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
@@ -197,6 +197,20 @@ class ReplayDataStore:
         idx = int(df["date"].searchsorted(cutoff, side="right"))
         start = max(0, idx - (max_rows or self.MAX_CANDLES))
         return df.iloc[start:idx].reset_index(drop=True)
+
+    def get_funding_candles(self, pair: str, up_to: datetime, max_rows: int | None = None) -> pd.DataFrame:
+        """Funding-rate events published at or before up_to, in freqtrade's funding_rate
+        candle layout (rate in 'open'; high/low/close = rate, volume 0). Lets strategies
+        read funding via dp.get_pair_dataframe(pair, tf, candle_type='funding_rate')."""
+        df = self._funding_rates.get(pair)
+        cols = ["date", "open", "high", "low", "close", "volume"]
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        idx = int(df["date"].searchsorted(pd.Timestamp(up_to), side="right"))
+        out = df.iloc[max(0, idx - (max_rows or self.MAX_CANDLES)):idx][["date", "open"]].copy()
+        out["high"] = out["low"] = out["close"] = out["open"]
+        out["volume"] = 0.0
+        return out[cols].reset_index(drop=True)
 
     def get_last_price(self, pair: str, up_to: datetime) -> float:
         """Close price of the last CLOSED candle before up_to, finest resolution first."""
