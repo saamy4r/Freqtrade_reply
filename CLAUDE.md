@@ -122,7 +122,7 @@ Subclasses `freqtrade.exchange.Exchange`. Overrides:
 7. **Patch `Worker._sleep`** → advances virtual clock instead of blocking
 8. **Patch `Wallets.record_wallet_state`** → upsert semantics (avoids UNIQUE constraint collision when multiple records share the same day-floor timestamp)
 9. **`FreqtradeBot(config)`** initialisation
-10. **`_load_informative_pairs()`** — detects and loads informative pairs declared by the strategy
+10. **`_load_informative_pairs()`** — detects and loads informative pairs declared by the strategy, via `gather_informative_pairs()` so both `informative_pairs()` and `@informative`-decorated pairs are registered as markets
 11. **Main loop** — steps at `sub_step` seconds (default 60s = 1m), calls `bot.process()` at each step
 12. **Summary + HTML report** (optional)
 13. **Restore all patches** in `finally` block
@@ -171,7 +171,7 @@ Funding fees were previously a known divergence but are now fully implemented us
 |---|---|---|
 | `--timerange` | required | `YYYYMMDD-YYYYMMDD` or `YYYYMMDDHHMM-YYYYMMDDHHMM` |
 | `--strategy` | `MyStrategy` | Strategy class name |
-| `--pairs` | config whitelist | Override trading pairs |
+| `--pairs` | config whitelist | Override trading pairs (replaces `exchange.pair_whitelist`, so the pairlist trades exactly these) |
 | `--config` | `user_data/config.json` | Path to freqtrade config |
 | `--sub-step` | `1m` | Intra-candle resolution: `1m`, `5m`, `15m` |
 | `--slippage` | `0.0005` | Half-spread fraction for bid/ask and order fills |

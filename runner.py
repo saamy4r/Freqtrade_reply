@@ -140,7 +140,9 @@ def _load_informative_pairs(
 ) -> None:
     """Detect and load informative pairs declared by the strategy."""
     try:
-        inf_pairs = bot.strategy.informative_pairs()
+        # gather_informative_pairs() also includes pairs declared with the
+        # @informative decorator, which informative_pairs() alone misses.
+        inf_pairs = bot.strategy.gather_informative_pairs()
     except Exception as exc:
         logger.warning("Could not read informative_pairs() from strategy: %s", exc)
         return
@@ -186,7 +188,7 @@ def _load_informative_pairs(
     # doesn't reject them as unknown symbols.
     for pair in extra:
         if pair not in exchange._markets:
-            exchange._markets[pair] = exchange._make_market(pair)
+            exchange._markets[pair] = exchange._make_market(pair, store)
 
 
 class _StickyProgress:
@@ -281,6 +283,9 @@ def run_replay(
     config["runmode"] = RunMode.DRY_RUN
     config["db_url"] = db_url
     config["pairs"] = pairs
+    # StaticPairList trades exchange.pair_whitelist, not config["pairs"];
+    # without this, --pairs only changed which data was loaded.
+    config["exchange"]["pair_whitelist"] = pairs
     config["strategy"] = strategy
 
     # Strip live credentials
