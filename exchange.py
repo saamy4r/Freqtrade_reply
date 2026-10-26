@@ -96,8 +96,7 @@ class ReplayExchange(Exchange):
         # Pre-populate markets so get_markets() / verify_whitelist() works
         self._markets = {pair: self._make_market(pair, store) for pair in store._pairs}
 
-    @staticmethod
-    def _make_market(pair: str, store: ReplayDataStore) -> dict:
+    def _make_market(self, pair: str, store: ReplayDataStore) -> dict:
         """Minimal market dict satisfying Freqtrade's market structure.
 
         Price precision is expressed as a per-pair TICK_SIZE (see
@@ -106,21 +105,22 @@ class ReplayExchange(Exchange):
         resolution — and any ATR-based stop distance — rounded away.
         """
         base, quote = pair.split("/")[0], pair.split("/")[1].split(":")[0]
+        spot = self._is_spot()
         return {
             "id": pair.replace("/", "").replace(":", ""),
             "symbol": pair,
             "base": base,
             "quote": quote,
             "active": True,
-            "spot": False,
-            "swap": True,
-            "future": True,
-            "linear": True,
-            "type": "swap",
-            "contract": True,
-            "contractSize": 1.0,
-            "taker": 0.0005,
-            "maker": 0.0002,
+            "spot": spot,
+            "swap": not spot,
+            "future": not spot,
+            "linear": None if spot else True,
+            "type": "spot" if spot else "swap",
+            "contract": not spot,
+            "contractSize": None if spot else 1.0,
+            "taker": 0.001 if spot else 0.0005,
+            "maker": 0.001 if spot else 0.0002,
             "precision": {"amount": 1e-8, "price": _infer_price_tick(store, pair)},
             "limits": {
                 "amount": {"min": 0.00001, "max": None},
@@ -429,9 +429,15 @@ class ReplayExchange(Exchange):
         # passes "taker" for market orders and immediately-crossed limit orders,
         # "maker" for limit orders that fill on a later check — matching the fee
         # split observed in real dry-run databases.
+        # Binance spot: 0.1% maker and taker (no BNB discount).
+        if self._is_spot():
+            return 0.001
         if order_type == "market" or taker_or_maker == "taker":
             return 0.0005
         return 0.0002
+
+    def _is_spot(self) -> bool:
+        return str(self._config.get("trading_mode", "futures")) == "spot"
 
     def get_funding_fees(
         self, pair: str, amount: float, is_short: bool, open_date: datetime

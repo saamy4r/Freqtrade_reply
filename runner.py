@@ -26,7 +26,7 @@ from freqtrade.wallets import Wallets
 from freqtrade.worker import Worker
 
 from .clock import VirtualClock
-from .data_store import TIMEFRAMES, ReplayDataStore
+from .data_store import TIMEFRAMES, ReplayDataStore, feather_name
 from .exchange import ReplayExchange
 
 logger = logging.getLogger(__name__)
@@ -87,9 +87,8 @@ def _download_data(
     need_ts = _need.tz_convert("UTC") if _need.tzinfo is not None else _need.tz_localize("UTC")
     actual_datadir = Path(datadir)
     for pair in pairs:
-        base = pair.replace("/", "_").replace(":", "_")
         for tf in TIMEFRAMES:
-            path = actual_datadir / f"{base}-{tf}-{trading_mode}.feather"
+            path = actual_datadir / feather_name(pair, tf, trading_mode)
             if not path.exists():
                 continue
             try:

@@ -36,6 +36,15 @@ def _tf_secs(tf: str) -> int:
     return int(tf[:-1]) * _TF_UNIT_SECS[tf[-1]]
 
 
+def feather_name(pair: str, tf: str, trading_mode: str) -> str:
+    """freqtrade's on-disk OHLCV name: futures "BTC_USDT_USDT-1h-futures.feather",
+    spot "BTC_USDT-1h.feather" (no candle-type suffix)."""
+    base = pair.replace("/", "_").replace(":", "_")
+    if trading_mode == "spot":
+        return f"{base}-{tf}.feather"
+    return f"{base}-{tf}-{trading_mode}.feather"
+
+
 def _normalise_dt(series: "pd.Series") -> "pd.Series":
     """Coerce a datetime column to UTC nanoseconds, regardless of source precision."""
     if series.dt.tz is None:
@@ -63,9 +72,7 @@ class ReplayDataStore:
     # ------------------------------------------------------------------
 
     def _filename(self, pair: str, tf: str) -> Path:
-        # "BTC/USDT:USDT" → "BTC_USDT_USDT-1h-futures.feather"
-        base = pair.replace("/", "_").replace(":", "_")
-        return self._data_dir / f"{base}-{tf}-{self._trading_mode}.feather"
+        return self._data_dir / feather_name(pair, tf, self._trading_mode)
 
     def _load_all(self) -> None:
         for pair in self._pairs:
