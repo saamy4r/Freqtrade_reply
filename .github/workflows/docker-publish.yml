@@ -3,6 +3,11 @@ name: Build and publish Docker image
 on:
   push:
     branches: [main]
+  # Weekly rebuild so the image picks up new freqtrade stable releases even
+  # when this repo has no new commits.
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
 
 env:
   IMAGE: ghcr.io/saamy4r/freqtrade-replay
@@ -29,6 +34,10 @@ jobs:
         with:
           context: .
           push: true
+          # Always pull the newest freqtradeorg/freqtrade:stable and never reuse
+          # cached layers, so the image is built on the latest official release.
+          pull: true
+          no-cache: true
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}

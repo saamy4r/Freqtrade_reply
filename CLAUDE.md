@@ -266,7 +266,7 @@ freqtrade trade --config user_data/config.json \
 
 ## Development notes
 
-- The replay image (`:latest` and `:<sha>`) is published to `ghcr.io/saamy4r/freqtrade-replay` via GitHub Actions on push to `main`. Because the image contains the code, **every code change needs that rebuild to reach users**
+- The replay image (`:latest` and `:<sha>`) is published to `ghcr.io/saamy4r/freqtrade-replay` via GitHub Actions on push to `main`, plus a weekly scheduled rebuild (and manual `workflow_dispatch`). Builds use `pull: true` + `no-cache: true`, so each image sits on the newest `freqtradeorg/freqtrade:stable`. Because the image contains the code, **every code change needs that rebuild to reach users**
 - The Dockerfile copies `*.py` only. A new non-Python file the code needs must be added to the `COPY`
 - `freezegun` and `plotly` are the only extra dependencies beyond the base freqtrade image
 - `debug_validate.py` contains a `ReplayDebugStrategy` for validating harness behaviour
