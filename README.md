@@ -15,25 +15,38 @@ Freqtrade Replay patches the exchange interface and virtual clock so the real Fr
 
 ## Setup
 
-**1. Clone into your `user_data` folder:**
+The image `ghcr.io/saamy4r/freqtrade-replay` contains everything: the official
+`freqtradeorg/freqtrade:stable` image, the replay code, and its two extra
+dependencies (`freezegun`, `plotly`). No clone is needed.
 
-```bash
-cd /path/to/your/freqtrade/user_data
-git clone https://github.com/saamy4r/Freqtrade_reply.git freqtrade_replay
-```
-
-**2. Add the replay service to `docker-compose.yml`:**
+Add the replay service to your `docker-compose.yml`:
 
 ```yaml
   replay:
     image: ghcr.io/saamy4r/freqtrade-replay:latest
     volumes:
       - "./user_data:/freqtrade/user_data"
+    profiles:
+      - replay
+```
+
+Update with `docker compose pull replay`. Besides `:latest`, every commit is
+also published as `:<git-sha>` if you want to pin a version.
+
+### Developing the replay itself
+
+To run your local edits instead of the code in the image, clone the repo into
+`user_data/` and point the entrypoint at the clone:
+
+```bash
+cd /path/to/your/freqtrade/user_data
+git clone https://github.com/saamy4r/freqtrade_replay.git freqtrade_replay
+```
+
+```yaml
     entrypoint:
       - python
       - /freqtrade/user_data/freqtrade_replay/cli.py
-    profiles:
-      - replay
 ```
 
 ---

@@ -16,7 +16,7 @@ DBs written: debug_single_{1,2}.sqlite  and  debug_multi_{1,2}.sqlite
              (separate from tradesv3.sqlite — deleted automatically after the run)
 
 Usage (inside container):
-    python /freqtrade/user_data/freqtrade_replay/debug_validate.py
+    python /opt/freqtrade_replay/freqtrade_replay/debug_validate.py
 """
 
 import sqlite3
@@ -26,7 +26,8 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, "/freqtrade")
-sys.path.insert(0, "/freqtrade/user_data")
+
+CLI = str(Path(__file__).absolute().parent / "cli.py")
 
 CONFIG         = "/freqtrade/user_data/config.json"
 STRATEGY       = "ReplayDebugStrategy"
@@ -54,7 +55,7 @@ def run(pairs: list, db_path: str, label: str, strategy: str = STRATEGY,
     print(f"  {label}")
     print(f"{'─' * 60}")
     cmd = [
-        "python", "/freqtrade/user_data/freqtrade_replay/cli.py",
+        "python", CLI,
         "--config",   CONFIG,
         "--strategy", strategy,
         "--pairs",    *pairs,

@@ -2,12 +2,12 @@
 """
 Freqtrade Replay Harness — CLI entry point.
 
-Example (inside container):
-    python /freqtrade/user_data/freqtrade_replay/cli.py \
+Example (inside the replay image — cli.py is its entrypoint):
+    python /opt/freqtrade_replay/freqtrade_replay/cli.py \
         --timerange 20241101-20241115
 
     # override config, pairs, strategy as needed:
-    python /freqtrade/user_data/freqtrade_replay/cli.py \
+    python /opt/freqtrade_replay/freqtrade_replay/cli.py \
         --config /freqtrade/user_data/config.json \
         --pairs "BTC/USDT:USDT" "ETH/USDT:USDT" \
         --timerange 20241101-20241115
@@ -23,9 +23,13 @@ import os
 import sys
 from datetime import datetime, timezone
 
-# Ensure freqtrade and our package are importable inside the container
+# Ensure freqtrade and our package are importable inside the container.  The
+# package is imported from the directory this file lives in — the copy baked
+# into the image (/opt/freqtrade_replay/freqtrade_replay) or a clone mounted at
+# /freqtrade/user_data/freqtrade_replay — so whichever cli.py is run is the code
+# that runs.  (No .resolve(): the package dir may be a symlink.)
 sys.path.insert(0, "/freqtrade")
-sys.path.insert(0, "/freqtrade/user_data")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from freqtrade_replay.runner import run_replay
 

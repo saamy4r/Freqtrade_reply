@@ -29,11 +29,19 @@ freqtrade_replay/
 ├── data_store.py    ReplayDataStore — loads feather files, serves time-gated slices
 ├── parallel.py      ParallelAnalyzer — strategy analysis on a fork()ed worker pool
 ├── compare_replays.py  Diff the trades of two replay DBs (serial vs parallel check)
-├── Dockerfile       FROM freqtradeorg/freqtrade:stable + freezegun + plotly
+├── Dockerfile       FROM freqtradeorg/freqtrade:stable + freezegun + plotly + this code
 └── README.md        User-facing setup and usage docs
 ```
 
-The project lives at `/freqtrade/user_data/freqtrade_replay/` inside the container, mounted from `./user_data/freqtrade_replay/` on the host.
+The image copies the code to `/opt/freqtrade_replay/freqtrade_replay/` (outside
+`user_data`, so the user_data volume mount never hides it), and its `ENTRYPOINT`
+is that copy of `cli.py`. Users only mount `user_data`; no clone is needed.
+
+For development, the repo is cloned at `./user_data/freqtrade_replay/` (mounted at
+`/freqtrade/user_data/freqtrade_replay/`), and the compose `entrypoint` is
+overridden to run that clone's `cli.py`. `cli.py` puts its own parent directory
+on `sys.path`, so whichever `cli.py` is run is the code that runs. Don't use
+`.resolve()` there, because the package dir may be a symlink.
 
 ---
 
@@ -44,7 +52,8 @@ The `replay` service in `docker-compose.yml` (one level above `user_data/`):
 ### `replay` service
 - Image: `ghcr.io/saamy4r/freqtrade-replay:latest` (built from `Dockerfile`)
 - Profile: `replay`
-- Entrypoint: `python /freqtrade/user_data/freqtrade_replay/cli.py`
+- Entrypoint: the image's own `python /opt/freqtrade_replay/freqtrade_replay/cli.py`
+  (dev setups override it with `/freqtrade/user_data/freqtrade_replay/cli.py`)
 - Run with: `docker compose --profile replay run --rm replay --strategy MyStrategy --timerange 20241101-20241115`
 
 ### Viewing results in FreqUI
@@ -257,7 +266,8 @@ freqtrade trade --config user_data/config.json \
 
 ## Development notes
 
-- The replay image is published to `ghcr.io/saamy4r/freqtrade-replay:latest` via GitHub Actions on push to `main`
+- The replay image (`:latest` and `:<sha>`) is published to `ghcr.io/saamy4r/freqtrade-replay` via GitHub Actions on push to `main`. Because the image contains the code, **every code change needs that rebuild to reach users**
+- The Dockerfile copies `*.py` only. A new non-Python file the code needs must be added to the `COPY`
 - `freezegun` and `plotly` are the only extra dependencies beyond the base freqtrade image
 - `debug_validate.py` contains a `ReplayDebugStrategy` for validating harness behaviour
 - Do not add `api_server` to the config passed to `FreqtradeBot` in `runner.py` — it is explicitly popped to avoid spawning an API server inside the replay container
