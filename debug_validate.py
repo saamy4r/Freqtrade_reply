@@ -6,6 +6,7 @@ Replay tool validation — runs ReplayDebugStrategy and checks two things:
   2. Completeness  — actual trade count ≈ expected (catches dropped signals)
   3. Concurrency   — with 3 pairs all signalling at the same hour, all 3
                      must open trades on the SAME minute (not just 1 or 2)
+  4. Parallelism   — --workers N produces the same trades as the serial path
 
 Strategy: ReplayDebugStrategy  (5m tf, enter at minute==0, ROI exit at 180 min)
 Timerange: 20260401-20260406  (5 days = 7 200 min / 180-min cycle = 40 trades)
@@ -47,7 +48,8 @@ _WARN = "WARN"
 
 # ── replay runner ─────────────────────────────────────────────────────────── #
 
-def run(pairs: list, db_path: str, label: str, strategy: str = STRATEGY) -> bool:
+def run(pairs: list, db_path: str, label: str, strategy: str = STRATEGY,
+        extra_args: tuple = ()) -> bool:
     print(f"\n{'─' * 60}")
     print(f"  {label}")
     print(f"{'─' * 60}")
@@ -59,6 +61,7 @@ def run(pairs: list, db_path: str, label: str, strategy: str = STRATEGY) -> bool
         "--timerange", TIMERANGE,
         "--datadir",  DATADIR,
         "--db",       f"sqlite:///{db_path}",
+        *extra_args,
     ]
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
@@ -231,11 +234,35 @@ def scenario_informative() -> bool:
     return ok
 
 
+def scenario_parallel() -> bool:
+    print("\n" + "═" * 60)
+    print("  SCENARIO 4 — Parallel analysis equivalence (3 pairs)")
+    print("  Validates: --workers 4 (+ idle skipping) gives exactly the same")
+    print("             trades as the fully serial path")
+    print("═" * 60)
+
+    db1 = f"{DB_DIR}/debug_par_serial.sqlite"
+    db2 = f"{DB_DIR}/debug_par_parallel.sqlite"
+
+    if not run(MULTI_PAIRS, db1, "Serial (--workers 1 --no-skip-idle)",
+               extra_args=("--workers", "1", "--no-skip-idle")):
+        return False
+    if not run(MULTI_PAIRS, db2, "Parallel (--workers 4)", extra_args=("--workers", "4")):
+        return False
+
+    t1 = load_trades(db1)
+    t2 = load_trades(db2)
+
+    ok  = check_determinism(t1, t2, "serial vs parallel")
+    ok &= check_concurrency(t2, MULTI_PAIRS, "parallel")
+    return ok
+
+
 # ── main ──────────────────────────────────────────────────────────────────── #
 
 def cleanup():
     for stem in ("debug_single_1", "debug_single_2", "debug_multi_1", "debug_multi_2",
-                 "debug_info_1", "debug_info_2"):
+                 "debug_info_1", "debug_info_2", "debug_par_serial", "debug_par_parallel"):
         for suffix in ("", "-shm", "-wal"):
             p = Path(f"{DB_DIR}/{stem}.sqlite{suffix}")
             if p.exists():
@@ -255,6 +282,7 @@ def main() -> int:
         ("Scenario 1 — single pair determinism + completeness", scenario_single()),
         ("Scenario 2 — multi-pair concurrency + determinism",   scenario_multi()),
         ("Scenario 3 — informative timeframe (manual dp pattern)", scenario_informative()),
+        ("Scenario 4 — parallel analysis == serial",            scenario_parallel()),
     ]
 
     print("\n" + "=" * 60)

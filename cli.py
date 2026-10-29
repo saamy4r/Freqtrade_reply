@@ -19,6 +19,7 @@ Docker run (from project root):
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 
@@ -118,7 +119,20 @@ def main() -> None:
              "5m is ~5× faster, 15m is ~15× faster — at the cost of stop-loss accuracy.",
     )
 
+    p.add_argument(
+        "--workers", type=int, default=os.cpu_count() or 1,
+        help="Processes for strategy analysis (default: all CPU cores). Trading, capital and "
+             "max_open_trades stay in one process. 1 = fully serial.",
+    )
+    p.add_argument(
+        "--no-skip-idle", action="store_true",
+        help="Run every sub-step even when there are no open trades and no entry signal "
+             "(only matters for strategies with side effects in bot_loop_start).",
+    )
+
     args = p.parse_args()
+    if args.workers < 1:
+        p.error("--workers must be >= 1")
 
     try:
         start_str, end_str = args.timerange.split("-")
@@ -146,6 +160,8 @@ def main() -> None:
         fresh=not args.no_fresh,
         report_path=args.report,
         sub_step=sub_step_secs,
+        workers=args.workers,
+        skip_idle=not args.no_skip_idle,
     )
 
 

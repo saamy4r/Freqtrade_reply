@@ -28,6 +28,7 @@ from freqtrade.worker import Worker
 from .clock import VirtualClock
 from .data_store import TIMEFRAMES, ReplayDataStore, feather_name
 from .exchange import ReplayExchange
+from .parallel import ParallelAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +268,8 @@ def run_replay(
     fresh: bool = True,
     report_path: str | None = None,
     sub_step: int = 60,
+    workers: int = 1,
+    skip_idle: bool = True,
 ) -> None:
     pairs = _normalise_pairs(pairs)
 
@@ -471,6 +474,7 @@ def run_replay(
 
     Wallets.record_wallet_state = _upsert_record_wallet_state
 
+    analyzer: ParallelAnalyzer | None = None
     try:
         # ---------------------------------------------------------------- #
         # 7. Initialise FreqtradeBot                                         #
@@ -491,6 +495,19 @@ def run_replay(
         #     when a new strategy-timeframe candle has closed.               #
         # ---------------------------------------------------------------- #
         bot.strategy.process_only_new_candles = True
+
+        # Anchor the live-window emulation explicitly.  Serial mode would set it
+        # on the first refresh (the first process() at start_dt); pinning it
+        # before the fork makes parallel workers use the identical window.
+        if exchange._replay_first_refresh is None:
+            exchange._replay_first_refresh = start_dt
+
+        if workers > 1:
+            # Forks here: workers inherit the fully-initialised bot.  Must stay
+            # before the progress thread starts.
+            analyzer = ParallelAnalyzer(
+                bot, clock, list(bot.active_pair_whitelist), start_dt, end_dt, sub_step, workers
+            )
 
         total_candles = int((end_dt - start_dt).total_seconds() / tf_secs)
         logger.info(
@@ -571,7 +588,10 @@ def run_replay(
                             )
                             _last_log_wall = now_wall
 
-                current += timedelta(seconds=sub_step)
+                next_step = current + timedelta(seconds=sub_step)
+                if skip_idle and _is_idle(bot):
+                    next_step = max(next_step, _next_wakeup(bot, current, start_dt, end_dt, sub_step, tf_secs))
+                current = next_step
 
         # ---------------------------------------------------------------- #
         # 9. Summary                                                         #
@@ -585,10 +605,58 @@ def run_replay(
         print()
 
     finally:
+        if analyzer is not None:
+            analyzer.close()
         ExchangeResolver.load_exchange = original_load_exchange
         Worker._sleep = original_sleep
         Wallets.record_wallet_state = original_record_wallet_state
         clock.stop()
+
+
+def _is_idle(bot) -> bool:
+    """
+    True when nothing can happen before the next strategy candle closes: no
+    open trades (and therefore no open orders) and no pair whose latest
+    analysed candle carries an entry signal.  Entries require a signal and the
+    signal only changes on a new candle, so every sub-step until then is a
+    no-op for trading.
+    """
+    if Trade.get_open_trades():
+        return False
+    tf = bot.strategy.timeframe
+    for pair in bot.active_pair_whitelist:
+        df, _ = bot.dataprovider.get_analyzed_dataframe(pair, tf)
+        if df.empty:
+            continue
+        last = df.iloc[-1]
+        for col in ("enter_long", "enter_short"):
+            if col in df.columns and last[col] == 1:
+                return False
+    return True
+
+
+def _next_wakeup(
+    bot, current: datetime, start_dt: datetime, end_dt: datetime, sub_step: int, tf_secs: int
+) -> datetime:
+    """
+    First sub-step grid time at which an idle bot could act again: the next
+    strategy-candle close, or the next scheduled job (e.g. the daily 00:07
+    wallet-history snapshot) if that comes first.
+    """
+    start = int(start_dt.timestamp())
+
+    def on_grid(ts: float) -> int:
+        return start + -(-(int(ts) - start) // sub_step) * sub_step
+
+    t = int(current.timestamp())
+    wake = on_grid((t // tf_secs + 1) * tf_secs)
+    next_run = bot._schedule.get_next_run()
+    if next_run is not None:
+        if next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+        if next_run.timestamp() > t:
+            wake = min(wake, on_grid(next_run.timestamp()))
+    return min(datetime.fromtimestamp(wake, tz=timezone.utc), end_dt)
 
 
 def _print_summary(db_url: str, report_path: str | None = None) -> None:

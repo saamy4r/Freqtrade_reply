@@ -67,6 +67,8 @@ Missing data is downloaded automatically before the run starts. When finished, a
 | `--datadir` | `user_data/data/binance/futures` | Path to feather data files |
 | `--no-fresh` | off | Keep existing DB instead of starting clean |
 | `--report` | off | Write a standalone HTML report to a file |
+| `--workers` | all CPU cores | Processes for strategy analysis; `1` = fully serial |
+| `--no-skip-idle` | off | Run every sub-step even when nothing can trade |
 
 ---
 
@@ -123,3 +125,30 @@ By default the replay steps through time at 1-minute resolution using real 1m ca
 | `--sub-step 15m` | 15 minutes | approximate | ~15× faster |
 
 Use `--sub-step 5m` during development and `1m` for final validation.
+
+### Multi-core (`--workers`)
+
+The slow part of a replay is usually the strategy's indicator code, not the
+trading. The replay therefore splits the work:
+
+- **Analysis runs on all cores.** Worker processes compute each pair's
+  analysed dataframe for upcoming candles ahead of time. Indicators depend
+  only on candle data, so the workers never need to know about trades or capital.
+- **Trading stays in one process.** A single, real `FreqtradeBot` owns the
+  wallet, `max_open_trades`, pair locks, orders and fills. It uses the workers'
+  dataframes instead of computing them, so capital and open-slot limits behave
+  exactly as in a dry-run.
+
+Callbacks such as `custom_stoploss` or `leverage` receive the same full
+dataframe they would in a serial run. `compare_replays.py serial.sqlite
+parallel.sqlite` checks that two runs produced identical trades.
+
+The speed-up scales with *physical* cores (hyper-threads add little). On a
+4-core laptop it is about 2.8× for an indicator-heavy strategy.
+
+On top of that, when there are no open trades and no entry signal, the replay
+jumps straight to the next candle close, because nothing can happen in between.
+
+Use `--workers 1` if your strategy's `populate_*` methods depend on open trades,
+the wallet, or state stored on the strategy instance (`self.something`) across
+candles. Workers work on copies of that state.

@@ -27,6 +27,8 @@ freqtrade_replay/
 ├── clock.py         VirtualClock — wraps freezegun
 ├── exchange.py      ReplayExchange — offline OHLCV/ticker/orderbook
 ├── data_store.py    ReplayDataStore — loads feather files, serves time-gated slices
+├── parallel.py      ParallelAnalyzer — strategy analysis on a fork()ed worker pool
+├── compare_replays.py  Diff the trades of two replay DBs (serial vs parallel check)
 ├── Dockerfile       FROM freqtradeorg/freqtrade:stable + freezegun + plotly
 └── README.md        User-facing setup and usage docs
 ```
@@ -123,9 +125,50 @@ Subclasses `freqtrade.exchange.Exchange`. Overrides:
 8. **Patch `Wallets.record_wallet_state`** → upsert semantics (avoids UNIQUE constraint collision when multiple records share the same day-floor timestamp)
 9. **`FreqtradeBot(config)`** initialisation
 10. **`_load_informative_pairs()`** — detects and loads informative pairs declared by the strategy, via `gather_informative_pairs()` so both `informative_pairs()` and `@informative`-decorated pairs are registered as markets
-11. **Main loop** — steps at `sub_step` seconds (default 60s = 1m), calls `bot.process()` at each step
-12. **Summary + HTML report** (optional)
-13. **Restore all patches** in `finally` block
+11. **`ParallelAnalyzer`** (when `--workers > 1`) — forks the worker pool and replaces `strategy.analyze_pair` (see below)
+12. **Main loop** — steps at `sub_step` seconds (default 60s = 1m), calls `bot.process()` at each step; idle stretches are skipped (see below)
+13. **Summary + HTML report** (optional)
+14. **Restore all patches** (and shut down the pool) in `finally` block
+
+### `parallel.py` — ParallelAnalyzer (multi-core)
+
+Profiling showed ~95% of replay time is spent in the strategy's `populate_*`
+methods. That work is a pure function of (pair, candle data, virtual time,
+live-window size) and never depends on portfolio state, so it is the part that
+runs in parallel. Everything that depends on shared state (capital,
+`max_open_trades`, locks, orders, fills) stays in the single main-process
+`FreqtradeBot`. **Never move trading logic into the workers.** Splitting by pair or
+timerange would break exactly that shared state.
+
+- The pool is created with the **fork** start method *after* the main bot,
+  informative pairs and `_replay_first_refresh` are set up, and *before* the
+  progress thread starts. Each worker inherits a full copy of the bot and the clock
+  and works on its own copy. `_init_worker` discards the inherited SQLite
+  connections (`dispose(close=False)`) and binds an in-memory DB.
+- Tasks are `(pair, step_time)` for every step at which a new strategy candle
+  first becomes visible (`analysis_step_times`), submitted in replay order with
+  a bounded lookahead. A worker advances its clock to `step_time`, refreshes candles
+  like the main loop, runs the original `analyze_pair` and returns the **full**
+  analysed dataframe.
+- In the main process `strategy.analyze_pair` is replaced. On a new candle it
+  installs the worker's dataframe via `dp._set_cached_df`. If there is no result or the
+  latest candle doesn't match, it falls back to the original `analyze_pair`.
+- `exchange._replay_first_refresh` is pinned to `start_dt` before the fork so
+  workers emulate the same live klines window as the main bot.
+- Assumption: `populate_*` doesn't depend on open trades, wallets or mutable
+  strategy instance state. Strategies that do need `--workers 1`.
+
+### Idle skipping (`runner._is_idle` / `_next_wakeup`)
+
+With no open trades and no entry signal on any pair's latest candle, nothing
+can trade until the next strategy candle closes. The loop then jumps to the first
+sub-step at or after that close, or to the scheduler's next job (the 00:07
+wallet snapshot) if that is earlier. While trades are open or a signal is pending,
+every sub-step still runs. `--no-skip-idle` disables this; it only changes how
+often `bot_loop_start` is called.
+
+Verify serial/parallel equivalence with `compare_replays.py` (run one replay
+with `--workers 1 --no-skip-idle`, one with defaults).
 
 ---
 
@@ -179,6 +222,8 @@ Funding fees were previously a known divergence but are now fully implemented us
 | `--datadir` | `user_data/data/binance/futures` | Feather file directory |
 | `--no-fresh` | off | Keep existing DB instead of wiping |
 | `--report` | off | Write standalone HTML report (plotly equity curve + per-pair P&L) |
+| `--workers` | `os.cpu_count()` | Analysis processes; `1` = fully serial (no pool) |
+| `--no-skip-idle` | off | Run every sub-step even when idle |
 
 ---
 
