@@ -6,20 +6,47 @@ Freqtrade Replay patches the exchange interface and virtual clock so the real Fr
 
 ---
 
-## Requirements
+## Quick start
 
-- Docker and Docker Compose
-- Freqtrade `user_data/` folder with your strategy and `config.json`
+You don't need to clone this repo. Everything is in the Docker image
+`ghcr.io/saamy4r/freqtrade-replay`: the official `freqtradeorg/freqtrade:stable`
+image, the replay code, and its extra dependencies.
 
----
+### 1. What you need
 
-## Setup
+- Docker
+- A normal freqtrade `user_data/` folder containing:
+  - `config.json`, with your exchange, `pair_whitelist` and a `StaticPairList`
+  - your strategy in `user_data/strategies/`
 
-The image `ghcr.io/saamy4r/freqtrade-replay` contains everything: the official
-`freqtradeorg/freqtrade:stable` image, the replay code, and its two extra
-dependencies (`freezegun`, `plotly`). No clone is needed.
+Candle data does not have to be downloaded beforehand. The replay downloads
+whatever is missing into `user_data/data/` on the first run.
 
-Add the replay service to your `docker-compose.yml`:
+### 2. Run a replay
+
+From the folder that contains `user_data/`:
+
+```bash
+docker run --rm \
+  -v "$PWD/user_data:/freqtrade/user_data" \
+  ghcr.io/saamy4r/freqtrade-replay:latest \
+  --strategy MyStrategy \
+  --timerange 20250101-20250201
+```
+
+When the run finishes, a summary is printed:
+
+```
+  Closed trades: 42
+  Win rate     : 28/42 (66.7%)
+  Total P&L    : +183.24 USDT
+```
+
+All trades are saved in `user_data/tradesv3_replay.sqlite`.
+
+### Or with Docker Compose
+
+Add this service to the `docker-compose.yml` next to your `user_data/` folder:
 
 ```yaml
   replay:
@@ -30,88 +57,92 @@ Add the replay service to your `docker-compose.yml`:
       - replay
 ```
 
-Update with `docker compose pull replay`. Besides `:latest`, every commit is
-also published as `:<git-sha>` if you want to pin a version.
-
-### Developing the replay itself
-
-To run your local edits instead of the code in the image, clone the repo into
-`user_data/` and point the entrypoint at the clone:
-
-```bash
-cd /path/to/your/freqtrade/user_data
-git clone https://github.com/saamy4r/freqtrade_replay.git freqtrade_replay
-```
-
-```yaml
-    entrypoint:
-      - python
-      - /freqtrade/user_data/freqtrade_replay/cli.py
-```
-
----
-
-## Usage
+and run:
 
 ```bash
 docker compose --profile replay run --rm replay \
   --strategy MyStrategy \
-  --timerange 20250101-20260101
+  --timerange 20250101-20250201
 ```
 
-Missing data is downloaded automatically before the run starts. When finished, a summary is printed to the terminal:
+### Updating
 
-```
-  Closed trades: 42
-  Win rate     : 28/42 (66.7%)
-  Total P&L    : +183.24 USDT
+```bash
+docker pull ghcr.io/saamy4r/freqtrade-replay:latest
 ```
 
-### Flags
-
-| Flag | Default | Description |
-|---|---|---|
-| `--timerange` | required | Date range as `YYYYMMDD-YYYYMMDD` |
-| `--strategy` | | Strategy class name |
-| `--pairs` | config whitelist | Override trading pairs |
-| `--config` | `user_data/config.json` | Path to config file |
-| `--sub-step` | `1m` | Intra-candle resolution: `1m`, `5m`, or `15m` |
-| `--slippage` | `0.0005` | Simulated bid-ask spread (0.05%) |
-| `--datadir` | `user_data/data/binance/futures` | Path to feather data files |
-| `--no-fresh` | off | Keep existing DB instead of starting clean |
-| `--report` | off | Write a standalone HTML report to a file |
-| `--workers` | all CPU cores | Processes for strategy analysis; `1` = fully serial |
-| `--no-skip-idle` | off | Run every sub-step even when nothing can trade |
+Every commit is also published as `:<git-sha>` if you want to pin an exact version.
 
 ---
 
-## View Results in FreqUI
+## Options
 
-The replay writes a standard SQLite database (`tradesv3_replay.sqlite`) that any
-freqtrade dry-run can serve to FreqUI. After the replay finishes, point a normal
-freqtrade bot at that database to browse trades and charts:
+Add any of these after the image name, or after `replay` with Compose:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--timerange` | required | `YYYYMMDD-YYYYMMDD` (or `YYYYMMDDHHMM-YYYYMMDDHHMM`) |
+| `--strategy` | `MyStrategy` | Strategy class name |
+| `--pairs` | config whitelist | Trade only these pairs, e.g. `--pairs BTC/USDT:USDT ETH/USDT:USDT` |
+| `--config` | `user_data/config.json` | Path to the config inside the container |
+| `--sub-step` | `1m` | Intra-candle resolution: `1m`, `5m`, or `15m` |
+| `--slippage` | `0.0005` | Simulated bid-ask half-spread (0.05%) |
+| `--workers` | all CPU cores | Processes for strategy analysis; `1` = fully serial |
+| `--db` | `user_data/tradesv3_replay.sqlite` | Output database URL |
+| `--datadir` | `user_data/data/binance/futures` | Folder with the `.feather` candle files |
+| `--no-fresh` | off | Keep the existing replay DB instead of starting clean |
+| `--report` | off | Also write an HTML report (equity curve + P&L per pair) |
+| `--no-skip-idle` | off | Run every sub-step even when nothing can trade |
+
+Paths are paths inside the container, where your `user_data` folder is
+`/freqtrade/user_data`. For example, to get an HTML report in your `user_data`
+folder:
 
 ```bash
-freqtrade trade \
-  --config user_data/config.json \
+... --report /freqtrade/user_data/replay_report.html
+```
+
+---
+
+## View results in FreqUI
+
+The replay database is a normal freqtrade database. To browse it in FreqUI, start
+a regular freqtrade bot on it after the replay has finished:
+
+```bash
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v "$PWD/user_data:/freqtrade/user_data" \
+  freqtradeorg/freqtrade:stable trade \
+  --config /freqtrade/user_data/config.json \
   --db-url sqlite:////freqtrade/user_data/tradesv3_replay.sqlite \
   --dry-run
 ```
 
-Open FreqUI at the port from your `config.json`'s `api_server` section and log in
-with its `username` / `password`. Because this viewer bot runs at real
-wall-clock time, charts for the historical replay trades load from your local
-feather data, and it never interferes with the replay (which has already
-finished). Stop the viewer when done.
+Then open <http://127.0.0.1:8080> and log in with the `username` / `password`
+from the `api_server` section of your `config.json`. That section must be enabled
+with `"listen_ip_address": "0.0.0.0"` so the UI is reachable from outside the container.
 
-> A live, concurrent FreqUI was intentionally removed: a viewer bot running
-> *during* the replay processes pairs at the current wall-clock time, which both
-> pollutes the shared replay database with its own trades and cannot render
-> charts for the historical (past-dated) replay trades.
+> **Tip:** this viewer is a real dry-run bot running at the current time. Set
+> `"initial_state": "stopped"` in the config you use for viewing, so it only
+> shows the replay trades and never opens new ones.
 
 ### Isolation from your live bot
 
-The replay writes to `tradesv3_replay.sqlite`, completely separate from `tradesv3.sqlite` used by your live bot. Pair locks, trades, and wallet state from the live bot never bleed into the replay.
+The replay writes to `tradesv3_replay.sqlite`, completely separate from the
+`tradesv3.sqlite` your live bot uses. Trades, pair locks and wallet state never
+mix between the two.
+
+### Comparing two replays
+
+`compare_replays.py` is in the image too. It reports whether two replay databases
+contain identical trades, for example a serial run against a parallel run:
+
+```bash
+docker run --rm -v "$PWD/user_data:/freqtrade/user_data" \
+  --entrypoint python ghcr.io/saamy4r/freqtrade-replay:latest \
+  /opt/freqtrade_replay/freqtrade_replay/compare_replays.py \
+  /freqtrade/user_data/replay_a.sqlite /freqtrade/user_data/replay_b.sqlite
+```
 
 ---
 
@@ -153,8 +184,9 @@ trading. The replay therefore splits the work:
   exactly as in a dry-run.
 
 Callbacks such as `custom_stoploss` or `leverage` receive the same full
-dataframe they would in a serial run. `compare_replays.py serial.sqlite
-parallel.sqlite` checks that two runs produced identical trades.
+dataframe they would in a serial run. Use [`compare_replays.py`](#comparing-two-replays)
+to check that a serial run (`--workers 1 --no-skip-idle`) and a parallel run
+produced identical trades.
 
 The speed-up scales with *physical* cores (hyper-threads add little). On a
 4-core laptop it is about 2.8× for an indicator-heavy strategy.
@@ -165,3 +197,28 @@ jumps straight to the next candle close, because nothing can happen in between.
 Use `--workers 1` if your strategy's `populate_*` methods depend on open trades,
 the wallet, or state stored on the strategy instance (`self.something`) across
 candles. Workers work on copies of that state.
+
+---
+
+## Developing the replay itself
+
+Only needed if you want to change the replay code. Clone the repo into
+`user_data/` and point the entrypoint at your clone, so your edits are used
+instead of the code in the image:
+
+```bash
+cd /path/to/your/freqtrade/user_data
+git clone https://github.com/saamy4r/freqtrade_replay.git freqtrade_replay
+```
+
+```yaml
+  replay:
+    image: ghcr.io/saamy4r/freqtrade-replay:latest
+    volumes:
+      - "./user_data:/freqtrade/user_data"
+    entrypoint:
+      - python
+      - /freqtrade/user_data/freqtrade_replay/cli.py
+    profiles:
+      - replay
+```
